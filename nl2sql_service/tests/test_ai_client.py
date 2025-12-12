@@ -31,6 +31,8 @@ class FakeSettings:
     JINA_BASE_URL = None
     DEEPSEEK_API_KEY = "fake-deepseek-key"
     DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+    QWEN_API_KEY = "fake-qwen-key"
+    QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 # ============================================================
@@ -159,6 +161,58 @@ def test_deepseek_routing_is_correct():
     
     # 验证模型名称
     assert model == "deepseek-reasoner"
+
+
+def test_qwen_routing_is_correct():
+    """验证 Qwen provider 正确初始化，Base URL 指向 dashscope.aliyuncs.com"""
+    # 创建包含 Qwen 配置的 AIClient
+    config = {
+        "default_provider": "openai",
+        "providers": {
+            "openai": {
+                "api_key": "fake-openai-key",
+                "base_url": None,
+                "type": "openai",
+            },
+            "jina": {
+                "api_key": "fake-jina-key",
+                "type": "jina",
+            },
+            "qwen": {
+                "api_key": "fake-qwen-key",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "type": "openai",  # Qwen 使用 OpenAI 兼容的 API
+            },
+        },
+        "model_mapping": {
+            "plan_generation": {
+                "provider": "qwen",
+                "model": "qwen-max"
+            },
+            "embedding": {
+                "provider": "jina",
+                "model": "jina-embeddings-v3"
+            },
+        },
+    }
+    
+    client = AIClient(config=config)
+    
+    # 验证 qwen provider 被初始化
+    assert "qwen" in client._providers
+    
+    # 解析 plan_generation（配置指向 qwen）
+    provider, model = client._resolve_model("plan_generation")
+    
+    # 验证使用的是 OpenAIProvider 适配器（架构设计要求）
+    assert isinstance(provider, OpenAIProvider)
+    
+    # 关键验证：验证 Base URL 是否真的切到了 Qwen
+    assert "dashscope" in str(provider.client.base_url)
+    assert provider.client.api_key == "fake-qwen-key"
+    
+    # 验证模型名称
+    assert model == "qwen-max"
 
 
 def test_init_with_deepseek_config():
@@ -346,6 +400,60 @@ async def test_generate_plan_uses_deepseek_when_configured():
     assert res == expected_resp
 
 
+@pytest.mark.asyncio
+async def test_generate_plan_uses_qwen_when_configured():
+    """验证 generate_plan 方法在配置指向 qwen 时调用 qwen provider"""
+    # 创建包含 Qwen 配置的 AIClient
+    config = {
+        "default_provider": "openai",
+        "providers": {
+            "openai": {
+                "api_key": "fake-openai-key",
+                "base_url": "https://api.openai.com/v1",
+                "type": "openai",
+            },
+            "qwen": {
+                "api_key": "fake-qwen-key",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "type": "openai",
+            },
+        },
+        "model_mapping": {
+            "plan_generation": {
+                "provider": "qwen",
+                "model": "qwen-max"
+            },
+        },
+    }
+    
+    client = AIClient(config=config)
+    
+    # 获取 qwen provider 实例
+    qwen_provider = client._providers["qwen"]
+    
+    # 验证 Base URL
+    assert "dashscope" in str(qwen_provider.client.base_url)
+    
+    # Mock 它的 chat_json 方法
+    expected_resp = {"intent": "AGG", "metrics": [], "dimensions": []}
+    qwen_provider.chat_json = AsyncMock(return_value=expected_resp)
+    
+    # 调用上层接口
+    messages = [{"role": "user", "content": "hi"}]
+    res = await client.generate_plan(messages=messages)
+    
+    # 验证调用了 qwen provider 的 chat_json
+    qwen_provider.chat_json.assert_awaited_once()
+    
+    # 获取调用参数
+    args, kwargs = qwen_provider.chat_json.await_args
+    
+    # 验证传给底层的是 qwen-max
+    assert kwargs["model"] == "qwen-max"
+    assert kwargs["messages"] == messages
+    assert res == expected_resp
+
+
 # ============================================================
 # Test Case 4: Stage 2 Integration with get_ai_client
 # ============================================================
@@ -411,3 +519,244 @@ async def test_stage2_integration_with_ai_client(mock_get_pipeline_config, mock_
     
     # 断言：generate_plan 被调用一次
     mock_ai_client.generate_plan.assert_awaited_once()
+
+
+# ============================================================
+# Test Case 5: 补充缺失的测试场景
+# ============================================================
+
+def test_routing_query_decomposition_to_openai():
+    """测试 query_decomposition usage_key 路由到 OpenAIProvider"""
+    # 创建 AIClient 实例
+    settings = FakeSettings()
+    client = AIClient.init_from_settings(settings)
+    
+    # 调用路由解析器
+    provider, model = client._resolve_model("query_decomposition")
+    
+    # 断言：provider 是 OpenAIProvider 实例
+    assert isinstance(provider, OpenAIProvider)
+    
+    # 断言：model 是 gpt-4o-mini（根据实际配置）
+    assert model == "gpt-4o-mini"
+
+
+def test_deepseek_base_url_from_init_from_settings():
+    """验证 init_from_settings 中 deepseek provider 使用配置的 DEEPSEEK_BASE_URL"""
+    # 创建包含 DeepSeek 配置的 FakeSettings
+    settings = FakeSettings()
+    
+    # 调用 init_from_settings
+    client = AIClient.init_from_settings(settings)
+    
+    # 验证 deepseek provider 被初始化
+    assert "deepseek" in client._providers
+    assert isinstance(client._providers["deepseek"], OpenAIProvider)
+    
+    # 关键验证：验证 Base URL 是配置的 DEEPSEEK_BASE_URL，而不是默认的 OpenAI URL
+    deepseek_provider = client._providers["deepseek"]
+    assert "api.deepseek.com" in str(deepseek_provider.client.base_url)
+    assert str(deepseek_provider.client.base_url) == settings.DEEPSEEK_BASE_URL
+
+
+def test_init_from_settings_includes_qwen_when_configured():
+    """验证 init_from_settings 中 qwen provider 使用配置的 QWEN_BASE_URL"""
+    # 创建包含 Qwen 配置的 FakeSettings
+    settings = FakeSettings()
+    
+    # 调用 init_from_settings
+    client = AIClient.init_from_settings(settings)
+    
+    # 验证 qwen provider 被初始化
+    assert "qwen" in client._providers
+    assert isinstance(client._providers["qwen"], OpenAIProvider)
+    
+    # 关键验证：验证 Base URL 是配置的 QWEN_BASE_URL，而不是默认的 OpenAI URL
+    qwen_provider = client._providers["qwen"]
+    assert "dashscope" in str(qwen_provider.client.base_url)
+    assert str(qwen_provider.client.base_url) == settings.QWEN_BASE_URL
+
+
+@pytest.mark.asyncio
+async def test_generate_decomposition_calls_openai_provider_chat_json():
+    """测试 generate_decomposition 正确调用 OpenAIProvider.chat_json"""
+    # 创建 AIClient 实例
+    settings = FakeSettings()
+    client = AIClient.init_from_settings(settings)
+    
+    # 获取 OpenAI provider 实例
+    openai_provider = client._providers["openai"]
+    
+    # 替换 chat_json 方法为 AsyncMock
+    fake_decomposition = {"sub_queries": [{"id": "q1", "description": "test"}]}
+    openai_provider.chat_json = AsyncMock(return_value=fake_decomposition)
+    
+    # 调用 generate_decomposition
+    messages = [{"role": "user", "content": "test"}]
+    result = await client.generate_decomposition(messages=messages)
+    
+    # 断言：chat_json 被调用一次
+    openai_provider.chat_json.assert_awaited_once()
+    
+    # 获取调用参数
+    args, kwargs = openai_provider.chat_json.await_args
+    
+    # 断言：kwargs 中的 messages 和 model 正确
+    assert kwargs["messages"] == messages
+    assert kwargs["model"] == "gpt-4o-mini"
+    
+    # 断言：返回值正确
+    assert result == fake_decomposition
+
+
+@pytest.mark.asyncio
+async def test_call_model_plan_generation_routing():
+    """测试 call_model 对 plan_generation 的正确路由"""
+    # 创建 AIClient 实例
+    settings = FakeSettings()
+    client = AIClient.init_from_settings(settings)
+    
+    # 获取 OpenAI provider 实例
+    openai_provider = client._providers["openai"]
+    
+    # 替换 chat_json 方法为 AsyncMock
+    fake_plan = {"intent": "AGG", "metrics": []}
+    openai_provider.chat_json = AsyncMock(return_value=fake_plan)
+    
+    # 调用 call_model
+    messages = [{"role": "user", "content": "test"}]
+    result = await client.call_model("plan_generation", messages=messages)
+    
+    # 断言：chat_json 被调用一次
+    openai_provider.chat_json.assert_awaited_once()
+    
+    # 获取调用参数
+    args, kwargs = openai_provider.chat_json.await_args
+    
+    # 断言：kwargs 中的 messages 和 model 正确
+    assert kwargs["messages"] == messages
+    assert kwargs["model"] == "gpt-4o-mini"
+    
+    # 断言：返回值正确
+    assert result == fake_plan
+
+
+@pytest.mark.asyncio
+async def test_call_model_query_decomposition_routing():
+    """测试 call_model 对 query_decomposition 的正确路由"""
+    # 创建 AIClient 实例
+    settings = FakeSettings()
+    client = AIClient.init_from_settings(settings)
+    
+    # 获取 OpenAI provider 实例
+    openai_provider = client._providers["openai"]
+    
+    # 替换 chat_json 方法为 AsyncMock
+    fake_decomposition = {"sub_queries": [{"id": "q1", "description": "test"}]}
+    openai_provider.chat_json = AsyncMock(return_value=fake_decomposition)
+    
+    # 调用 call_model
+    messages = [{"role": "user", "content": "test"}]
+    result = await client.call_model("query_decomposition", messages=messages)
+    
+    # 断言：chat_json 被调用一次
+    openai_provider.chat_json.assert_awaited_once()
+    
+    # 获取调用参数
+    args, kwargs = openai_provider.chat_json.await_args
+    
+    # 断言：kwargs 中的 messages 和 model 正确
+    assert kwargs["messages"] == messages
+    assert kwargs["model"] == "gpt-4o-mini"
+    
+    # 断言：返回值正确
+    assert result == fake_decomposition
+
+
+def test_call_model_with_unknown_usage_key():
+    """测试 call_model 在未配置的 usage_key 时抛出合理异常，并包含可用 usage_key 列表"""
+    # 创建 AIClient 实例
+    settings = FakeSettings()
+    client = AIClient.init_from_settings(settings)
+    
+    # 尝试使用未配置的 usage_key
+    with pytest.raises(ValueError) as exc_info:
+        client._resolve_model("unknown_usage_key")
+    
+    # 断言：异常消息包含 usage_key 信息
+    error_message = str(exc_info.value)
+    assert "unknown_usage_key" in error_message.lower()
+    
+    # 断言：异常消息包含可用 usage_key 列表
+    assert "available" in error_message.lower() or "keys" in error_message.lower()
+    
+    # 验证异常消息中确实包含了可用的 usage_key
+    # 根据默认配置，应该包含这些 key
+    available_keys = list(client.config.get("model_mapping", {}).keys())
+    assert len(available_keys) > 0
+    # 异常消息应该提到这些可用的 key（至少提到一个）
+    assert any(key in error_message for key in available_keys)
+
+
+@pytest.mark.asyncio
+async def test_call_model_embedding_routing():
+    """测试 call_model 对 embedding 的正确路由"""
+    # 创建 AIClient 实例
+    settings = FakeSettings()
+    client = AIClient.init_from_settings(settings)
+    
+    # 获取 Jina provider 实例
+    jina_provider = client._providers["jina"]
+    
+    # 替换 embed 方法为 AsyncMock
+    mock_embedding = [[0.1, 0.2, 0.3]]
+    jina_provider.embed = AsyncMock(return_value=mock_embedding)
+    
+    # 调用 call_model
+    texts = ["hello world"]
+    result = await client.call_model("embedding", texts=texts)
+    
+    # 断言：embed 被调用一次
+    jina_provider.embed.assert_awaited_once()
+    
+    # 获取调用参数
+    args, kwargs = jina_provider.embed.await_args
+    
+    # 断言：kwargs 中的 texts 和 model 正确
+    assert kwargs["texts"] == texts
+    assert kwargs["model"] == "jina-embeddings-v3"
+    
+    # 断言：返回值正确
+    assert result == mock_embedding
+
+
+@pytest.mark.asyncio
+async def test_call_model_with_missing_messages_raises_error():
+    """测试 call_model 在缺少 messages 参数时抛出异常"""
+    # 创建 AIClient 实例
+    settings = FakeSettings()
+    client = AIClient.init_from_settings(settings)
+    
+    # 尝试调用 call_model 但缺少 messages 参数
+    with pytest.raises(ValueError) as exc_info:
+        await client.call_model("plan_generation")
+    
+    # 断言：异常消息提到 messages 参数
+    error_message = str(exc_info.value)
+    assert "messages" in error_message.lower()
+
+
+@pytest.mark.asyncio
+async def test_call_model_with_missing_texts_raises_error():
+    """测试 call_model 在缺少 texts 参数时抛出异常"""
+    # 创建 AIClient 实例
+    settings = FakeSettings()
+    client = AIClient.init_from_settings(settings)
+    
+    # 尝试调用 call_model 但缺少 texts 参数
+    with pytest.raises(ValueError) as exc_info:
+        await client.call_model("embedding")
+    
+    # 断言：异常消息提到 texts 参数
+    error_message = str(exc_info.value)
+    assert "texts" in error_message.lower()

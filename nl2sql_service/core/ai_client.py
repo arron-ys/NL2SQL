@@ -105,8 +105,9 @@ class AIClient:
             provider_type = provider_config.get("type")
             
             # 如果没有 type 字段，根据 provider 名称推断（向后兼容）
+            # 注意：对于 OpenAI 兼容的 provider（如 deepseek、qwen），必须显式指定 type="openai"
             if not provider_type:
-                if provider_name == "openai" or provider_name == "deepseek":
+                if provider_name == "openai":
                     provider_type = "openai"
                 elif provider_name == "jina":
                     provider_type = "jina"
@@ -371,6 +372,18 @@ class AIClient:
                 "api_key": deepseek_api_key,
                 "base_url": get_config_value("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                 "type": "openai",  # DeepSeek 使用 OpenAI 兼容的 API
+            }
+        
+        # 添加 Qwen 配置（如果提供了 API Key）
+        qwen_api_key = get_config_value("QWEN_API_KEY")
+        if qwen_api_key:
+            providers_config["qwen"] = {
+                "api_key": qwen_api_key,
+                "base_url": get_config_value(
+                    "QWEN_BASE_URL", 
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                ),
+                "type": "openai",  # Qwen 使用 OpenAI 兼容的 API
             }
         
         config = {
