@@ -6,22 +6,22 @@ AI Client Test Suite
 - 路由逻辑
 - 方法委托
 - Stage 集成
-"""
+""" 
 from datetime import date
 from typing import Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
+import pytest   
 
 from core.ai_client import AIClient, get_ai_client
 from core.providers.jina_provider import JinaProvider
 from core.providers.openai_provider import OpenAIProvider
-from schemas.request import RequestContext, SubQueryItem
+from schemas.request import RequestContext, SubQueryItem  
 
 
 # ============================================================
 # Test Fixtures and Helper Classes
-# ============================================================
+# ============================================================  
 
 class FakeSettings:
     """模拟设置对象，用于测试 init_from_settings"""
@@ -32,7 +32,7 @@ class FakeSettings:
     DEEPSEEK_API_KEY = "fake-deepseek-key"
     DEEPSEEK_BASE_URL = "https://api.deepseek.com"
     QWEN_API_KEY = "fake-qwen-key"
-    QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/"
 
 
 # ============================================================
@@ -554,9 +554,13 @@ def test_deepseek_base_url_from_init_from_settings():
     assert isinstance(client._providers["deepseek"], OpenAIProvider)
     
     # 关键验证：验证 Base URL 是配置的 DEEPSEEK_BASE_URL，而不是默认的 OpenAI URL
+    # 注意：OpenAI 客户端库可能会自动规范化 URL（添加/移除尾随斜杠），所以需要规范化后再比较
     deepseek_provider = client._providers["deepseek"]
     assert "api.deepseek.com" in str(deepseek_provider.client.base_url)
-    assert str(deepseek_provider.client.base_url) == settings.DEEPSEEK_BASE_URL
+    # 规范化 URL（去掉尾随斜杠）后再比较
+    actual_url = str(deepseek_provider.client.base_url).rstrip('/')
+    expected_url = settings.DEEPSEEK_BASE_URL.rstrip('/')
+    assert actual_url == expected_url
 
 
 def test_init_from_settings_includes_qwen_when_configured():
@@ -572,9 +576,13 @@ def test_init_from_settings_includes_qwen_when_configured():
     assert isinstance(client._providers["qwen"], OpenAIProvider)
     
     # 关键验证：验证 Base URL 是配置的 QWEN_BASE_URL，而不是默认的 OpenAI URL
+    # 注意：OpenAI 客户端库可能会自动规范化 URL（添加/移除尾随斜杠），所以需要规范化后再比较
     qwen_provider = client._providers["qwen"]
     assert "dashscope" in str(qwen_provider.client.base_url)
-    assert str(qwen_provider.client.base_url) == settings.QWEN_BASE_URL
+    # 规范化 URL（去掉尾随斜杠）后再比较
+    actual_url = str(qwen_provider.client.base_url).rstrip('/')
+    expected_url = settings.QWEN_BASE_URL.rstrip('/')
+    assert actual_url == expected_url
 
 
 @pytest.mark.asyncio
