@@ -542,3 +542,5 @@ async def generate_sql(
         raise Stage4Error(f"Failed to render SQL: {str(e)}") from e
 
 
+
+
