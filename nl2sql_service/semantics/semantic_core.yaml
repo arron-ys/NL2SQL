@@ -1,0 +1,375 @@
+version: "2.0.0"
+description: "核心语义模型。包含实体、维度定义、以及维度的枚举值集合。"
+
+domains:
+  - id: "SALES"
+    name: "销售域"
+    default_entity_id: "ENT_SALES_ORDER_ITEM"
+    default_time_field_id: "ORDER_DATE"
+    default_time_window_id: "TIME_LAST_30D"
+  - id: "HR"
+    name: "人力资源域"
+    default_entity_id: "ENT_EMPLOYEE"
+    default_time_field_id: "HIRE_DATE"
+    default_time_window_id: "TIME_AS_OF_TODAY"
+
+entities:
+  - id: "ENT_SALES_ORDER_ITEM"
+    name: "销售订单行"
+    # 【合并】：来自 term_synonyms.txt 的 ENTITY_SALES_ORDER_ITEM
+    aliases: 
+      - "订单明细行"
+      - "订单行"
+      - "销售明细行"
+    domain_id: "SALES"
+    entity_type: "FACT"
+    semantic_view: "v_sales_order_item"
+    grain: "ORDER_LINE"
+    primary_key: ["order_number", "order_line_number"]
+    default_time_field_id: "ORDER_DATE"
+    default_time_window_id: "TIME_LAST_30D"
+    
+  - id: "ENT_EMPLOYEE"
+    name: "员工"
+    # 【合并】：来自 term_synonyms.txt 的 ENTITY_EMPLOYEE
+    aliases: 
+      - "EMP"
+      - "职员"
+    domain_id: "HR"
+    entity_type: "DIMENSION"
+    semantic_view: "v_employee_profile"
+    grain: "ENT_EMPLOYEE"
+    primary_key: ["employee_id"]
+    default_time_field_id: "HIRE_DATE"
+    default_time_window_id: "TIME_AS_OF_TODAY"
+
+dimensions:
+  # ================= SALES 维度 =================
+  - id: "DIM_ORDER_NUMBER"
+    name: "订单号"
+    aliases: ["订单ID", "订单编号"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "INTEGER"
+    column: "order_number"
+
+  - id: "DIM_ORDER_DATE"
+    name: "订单日期"
+    aliases: ["下单日期", "下单时间"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "DATE"
+    column: "order_date"
+    is_time_dimension: true
+    time_field_id: "ORDER_DATE"
+    allowed_time_grains: ["DAY", "WEEK", "MONTH", "QUARTER", "YEAR"]
+
+  - id: "DIM_REQUIRED_DATE"
+    name: "要求交付日期"
+    aliases: ["要求交货日期", "要求到货日期"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "DATE"
+    column: "required_date"
+    is_time_dimension: true
+    time_field_id: "REQUIRED_DATE"
+
+  - id: "DIM_SHIPPED_DATE"
+    name: "发货日期"
+    aliases: ["出库日期", "出货日期", "发货时间"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "DATE"
+    column: "shipped_date"
+    is_time_dimension: true
+    time_field_id: "SHIPPED_DATE"
+
+  - id: "DIM_ORDER_STATUS"
+    name: "订单状态"
+    aliases: ["ORDER_STATUS", "状态"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "order_status"
+    enum_value_set_id: "STATUS_ORDER_STATUS_ALL" # 关联到下方 enums
+
+  - id: "DIM_CUSTOMER_NUMBER"
+    name: "客户编号"
+    aliases: ["客户ID", "客户代码", "客户号"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "INTEGER"
+    column: "customer_number"
+
+  - id: "DIM_CUSTOMER_NAME"
+    name: "客户名称"
+    aliases: ["买家名称", "客户名", "客户名字"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "customer_name"
+
+  - id: "DIM_COUNTRY"
+    name: "国家"
+    aliases: ["COUNTRY", "国家（订单维度）"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "country"
+
+  - id: "DIM_CITY"
+    name: "城市"
+    aliases: ["客户城市", "所在城市"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "city"
+
+  - id: "DIM_STATE"
+    name: "州/省"
+    aliases: ["州", "省份"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "state"
+
+  - id: "DIM_POSTAL_CODE"
+    name: "邮编"
+    aliases: ["邮政编码"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "postal_code"
+
+  - id: "DIM_SALES_REP_EMPLOYEE_NUMBER"
+    name: "销售代表员工号"
+    aliases: ["销售代表工号", "销售员工号"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "INTEGER"
+    column: "sales_rep_employee_number"
+
+  - id: "DIM_PRODUCT_CODE"
+    name: "产品编码"
+    aliases: ["SKU编码", "产品代码", "商品编码"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "product_code"
+
+  - id: "DIM_PRODUCT_NAME"
+    name: "产品名称"
+    aliases: ["产品名", "商品名称", "货品名称"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "product_name"
+
+  - id: "DIM_PRODUCT_LINE"
+    name: "产品线"
+    aliases: ["PRODUCT_LINE", "产品类别"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "product_line"
+
+  - id: "DIM_PRODUCT_SCALE"
+    name: "产品规格"
+    aliases: ["型号", "尺寸", "规格"]
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    data_type: "STRING"
+    column: "product_scale"
+
+  # ================= HR 维度 =================
+  - id: "DIM_EMPLOYEE_ID"
+    name: "员工编号"
+    aliases: ["员工ID", "员工号", "工号"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "INTEGER"
+    column: "employee_id"
+
+  - id: "DIM_EMPLOYEE_NAME"
+    name: "员工姓名"
+    aliases: ["同事名字", "名字", "员工名字", "姓名"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "STRING"
+    column: "full_name"
+
+  - id: "DIM_DEPARTMENT_ID"
+    name: "部门编号"
+    aliases: ["部门ID", "部门代码"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "INTEGER"
+    column: "department_id"
+
+  - id: "DIM_DEPARTMENT"
+    name: "部门名称"
+    aliases: ["DEPT", "部门"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "STRING"
+    column: "department_name"
+
+  - id: "DIM_JOB_ID"
+    name: "岗位编号"
+    aliases: ["岗位ID", "岗位代码"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "INTEGER"
+    column: "job_id"
+
+  - id: "DIM_JOB"
+    name: "岗位名称"
+    aliases: ["岗位", "职位", "职务"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "STRING"
+    column: "job_title"
+
+  - id: "DIM_LOCATION_CITY"
+    name: "工作城市"
+    aliases: ["办公城市", "所在城市"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "STRING"
+    column: "location_city"
+
+  - id: "DIM_LOCATION_COUNTRY"
+    name: "工作国家"
+    aliases: ["所在国家"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "STRING"
+    column: "location_country"
+
+  - id: "DIM_REGION"
+    name: "区域"
+    aliases: ["地区", "大区", "片区"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "STRING"
+    column: "region"
+
+  - id: "DIM_HIRE_DATE"
+    name: "入职日期"
+    aliases: ["HIRE_DATE", "入职时间"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "DATE"
+    column: "hire_date"
+    is_time_dimension: true
+    time_field_id: "HIRE_DATE"
+
+  - id: "DIM_EMPLOYMENT_STATUS"
+    name: "员工状态"
+    aliases: ["人事状态", "人员状态", "任职状态", "在职状态"]
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    data_type: "STRING"
+    column: "status"
+    enum_value_set_id: "STATUS_EMPLOYMENT_STATUS_ALL"
+
+# 【合并】：来自 enum_dicts.txt 的 status_enums，以及 term_synonyms.txt 中的 STATUS_SET 别名
+enums:
+  - id: "STATUS_ORDER_STATUS_ALL"
+    name: "订单状态全集"
+    aliases: ["ORDER_STATUS_ALL"]
+    domain_id: "SALES"
+    target_dim_id: "DIM_ORDER_STATUS"
+    values: ["In Process", "On Hold", "Resolved", "Shipped", "Cancelled", "Disputed"]
+
+  - id: "STATUS_EMPLOYMENT_STATUS_ALL"
+    name: "员工状态全集"
+    aliases: ["EMPLOYMENT_STATUS_ALL"]
+    domain_id: "HR"
+    target_dim_id: "DIM_EMPLOYMENT_STATUS"
+    values: ["ACTIVE", "PROBATION", "LEAVE", "SUSPENDED", "TERMINATED", "RETIRED"]
+
+  - id: "STATUS_VALID_FOR_REVENUE"
+    name: "有效订单状态集合（收入口径）"
+    aliases: ["VALID_FOR_REV", "收入口径有效订单状态"]
+    domain_id: "SALES"
+    target_dim_id: "DIM_ORDER_STATUS"
+    values: ["Resolved", "Shipped"]
+
+  - id: "STATUS_VALID_FOR_PIPELINE"
+    name: "有效订单状态集合（销售管道口径）"
+    aliases: ["VALID_FOR_PIPE", "销售管道有效订单状态"]
+    domain_id: "SALES"
+    target_dim_id: "DIM_ORDER_STATUS"
+    values: ["In Process", "On Hold", "Resolved", "Shipped"]
+
+  - id: "STATUS_INVALID_ORDER"
+    name: "无效订单状态集合"
+    aliases: ["取消和争议订单", "无效订单"]
+    domain_id: "SALES"
+    target_dim_id: "DIM_ORDER_STATUS"
+    values: ["Cancelled", "Disputed"]
+
+  - id: "STATUS_EMPLOYMENT_ACTIVE"
+    name: "在职员工状态集合"
+    aliases: ["在职员工口径", "在职状态集合"]
+    domain_id: "HR"
+    target_dim_id: "DIM_EMPLOYMENT_STATUS"
+    values: ["ACTIVE", "PROBATION", "LEAVE", "SUSPENDED"]
+
+  - id: "STATUS_EMPLOYMENT_LEFT"
+    name: "离职/退休员工状态集合"
+    aliases: ["离职员工", "离职状态集合"]
+    domain_id: "HR"
+    target_dim_id: "DIM_EMPLOYMENT_STATUS"
+    values: ["TERMINATED", "RETIRED"]
+
+# 【修正】：恢复你的预留占位符 (Roadmap)
+# 这些列表目前为空，但在代码解析时应预留接口
+placeholders:
+  master_data_enums: []      # 预留：主数据枚举 (如国家代码表)
+  tier_enums: []             # 预留：分层枚举 (如客户等级: 金/银/铜)
+  extended_boolean_enums: [] # 预留：扩展布尔 (如 Is_Valid: Y/N/Unknown)
+  channel_type_enums: []     # 预留：渠道类型
+
+
+# 【保留】：来自 semantic_metrics.txt 的逻辑过滤定义
+logical_filters:
+  - id: "LF_REVENUE_VALID_ORDER"
+    name: "收入口径有效订单过滤"
+    domain_id: "SALES"
+    filters:
+      - target_id: "DIM_ORDER_STATUS"
+        operator: "IN_SET"
+        value_set_id: "STATUS_VALID_FOR_REVENUE"
+
+  - id: "LF_PIPELINE_VALID_ORDER"
+    name: "销售管道口径有效订单过滤"
+    domain_id: "SALES"
+    filters:
+      - target_id: "DIM_ORDER_STATUS"
+        operator: "IN_SET"
+        value_set_id: "STATUS_VALID_FOR_PIPELINE"
+
+  - id: "LF_HR_ACTIVE_EMPLOYEE"
+    name: "在职员工口径过滤"
+    domain_id: "HR"
+    filters:
+      - target_id: "DIM_EMPLOYMENT_STATUS"
+        operator: "IN_SET"
+        value_set_id: "STATUS_EMPLOYMENT_ACTIVE"
+      - target_id: null
+        operator: "RAW_SQL"
+        sql: "status_start_date <= CURDATE() AND (status_end_date IS NULL OR status_end_date >= CURDATE())"
+
+relationships:
+  - id: "REL_SALES_ORDER_ITEM_EMPLOYEE_SALES_REP"
+    name: "订单行-销售代表员工主档"
+    left_domain: "SALES"
+    left_entity: "ENT_SALES_ORDER_ITEM"
+    right_domain: "HR"
+    right_entity: "ENT_EMPLOYEE"
+    join_type: "LEFT"
+    conditions:
+      - left: "sales_rep_employee_number"
+        right: "employee_id"

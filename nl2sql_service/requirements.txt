@@ -1,0 +1,27 @@
+# Web Framework (Row 3 & 4)
+fastapi>=0.100.0
+uvicorn[standard]
+
+# Data Validation (Row 5 - Strict v2)
+pydantic>=2.0.0
+pydantic-settings
+
+# SQL Generation (Row 6)
+pypika
+
+# Database (Row 7 - Async Drivers)
+sqlalchemy>=2.0.0
+asyncpg         # PostgreSQL Driver
+aiomysql        # MySQL Driver
+
+# LLM & AI (Row 8, 9, 10)
+openai          # Official SDK
+qdrant-client   # Vector DB
+httpx           # Async HTTP for Jina AI
+
+# Utilities (Row 11)
+python-dotenv
+pyyaml
+loguru          # Structured Logging
+
+

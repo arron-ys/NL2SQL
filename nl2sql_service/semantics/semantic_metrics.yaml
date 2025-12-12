@@ -1,0 +1,251 @@
+version: "2.0.0"
+description: "指标定义文件。包含指标的计算逻辑、默认时间窗口以及用于 RAG 检索的别名列表。"
+
+metrics:
+  # ================= SALES 域 =================
+  - id: "METRIC_GMV"
+    name: "GMV（收入口径）"
+    description: "收入口径有效订单范围内，对订单行金额 line_gmv 求和。"
+    # 【合并】：来自 term_synonyms.txt 的 METRIC_GMV
+    aliases: 
+      - "GMV"
+      - "总销售额"
+      - "成交金额"
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    category: "CORE"
+    metric_type: "AGG"
+    expression:
+      expr_type: "SQL"
+      sql: "SUM(line_gmv)"
+    default_time:
+      time_field_id: "ORDER_DATE"
+      time_window_id: "TIME_DEFAULT_30D"
+      time_range_fallback:
+        type: "LAST_N"
+        value: 30
+        unit: "DAY"
+    default_filters:
+      - "LF_REVENUE_VALID_ORDER"
+    status_dependencies:
+      - "STATUS_VALID_FOR_REVENUE"
+    allowed_dimensions: ["DIM_ORDER_DATE", "DIM_COUNTRY", "DIM_CITY", "DIM_PRODUCT_LINE", "DIM_CUSTOMER_NUMBER"]
+    allowed_time_grains: ["DAY", "WEEK", "MONTH", "QUARTER", "YEAR"]
+    is_additive: true
+    unit: "CURRENCY"
+    sensitivity: "MEDIUM"
+
+  - id: "METRIC_GMV_PIPELINE"
+    name: "GMV（销售管道口径）"
+    description: "销售管道口径有效订单范围内，对订单行金额 line_gmv 求和。"
+    # 【合并】：来自 term_synonyms.txt 的 METRIC_GMV_PIPELINE
+    aliases:
+      - "GMV_PIPE"
+      - "订单储备"
+      - "销售在手GMV"
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    category: "DERIVED"
+    metric_type: "AGG"
+    expression:
+      expr_type: "SQL"
+      sql: "SUM(line_gmv)"
+    default_time:
+      time_field_id: "ORDER_DATE"
+      time_window_id: "TIME_DEFAULT_30D"
+      time_range_fallback:
+        type: "LAST_N"
+        value: 30
+        unit: "DAY"
+    default_filters:
+      - "LF_PIPELINE_VALID_ORDER"
+    status_dependencies:
+      - "STATUS_VALID_FOR_PIPELINE"
+    allowed_dimensions: ["DIM_ORDER_DATE", "DIM_COUNTRY", "DIM_CITY", "DIM_SALES_REP_EMPLOYEE_NUMBER"]
+    allowed_time_grains: ["DAY", "WEEK", "MONTH", "QUARTER"]
+    is_additive: true
+    unit: "CURRENCY"
+    sensitivity: "MEDIUM"
+
+  - id: "METRIC_ORDER_CNT"
+    name: "订单数（完成订单）"
+    description: "收入口径有效订单范围内，对订单号去重计数。"
+    # 【合并】：来自 term_synonyms.txt 的 METRIC_ORDER_CNT
+    aliases:
+      - "ORDERS_DONE"
+      - "完成订单数"
+      - "订单量"
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    category: "BASE"
+    metric_type: "AGG"
+    expression:
+      expr_type: "SQL"
+      sql: "COUNT(DISTINCT order_number)"
+    default_time:
+      time_field_id: "ORDER_DATE"
+      time_window_id: "TIME_LAST_30D"
+      time_range_fallback:
+        type: "LAST_N"
+        value: 30
+        unit: "DAY"
+    default_filters:
+      - "LF_REVENUE_VALID_ORDER"
+    status_dependencies:
+      - "STATUS_VALID_FOR_REVENUE"
+    allowed_dimensions: ["DIM_ORDER_DATE", "DIM_COUNTRY", "DIM_CUSTOMER_NUMBER", "DIM_PRODUCT_LINE"]
+    allowed_time_grains: ["DAY", "WEEK", "MONTH", "QUARTER"]
+    is_additive: true
+    unit: "COUNT"
+    sensitivity: "LOW"
+
+  - id: "METRIC_ACTIVE_CUSTOMER_CNT"
+    name: "活跃客户数（90天）"
+    description: "最近90天内至少有一笔收入口径有效订单的客户数量。"
+    # 【合并】：来自 term_synonyms.txt 的 METRIC_ACTIVE_CUSTOMER_CNT
+    aliases:
+      - "ACTIVE_CUST_90D"
+      - "活跃买家"
+      - "近90天有下单客户"
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    category: "GROWTH"
+    metric_type: "AGG"
+    expression:
+      expr_type: "SQL"
+      sql: "COUNT(DISTINCT customer_number)"
+    default_time:
+      time_field_id: "ORDER_DATE"
+      time_window_id: "TIME_LAST_90D"
+      time_range_fallback:
+        type: "LAST_N"
+        value: 90
+        unit: "DAY"
+    default_filters:
+      - "LF_REVENUE_VALID_ORDER"
+    status_dependencies:
+      - "STATUS_VALID_FOR_REVENUE"
+    allowed_dimensions: ["DIM_COUNTRY", "DIM_CITY"]
+    allowed_time_grains: ["DAY", "WEEK", "MONTH", "QUARTER"]
+    is_additive: true
+    unit: "COUNT"
+    sensitivity: "LOW"
+
+  - id: "METRIC_AOV"
+    name: "客单价（AOV）"
+    description: "总 GMV / 完成订单数。"
+    # 【合并】：来自 term_synonyms.txt 的 METRIC_AOV
+    aliases:
+      - "AOV"
+      - "平均客单价"
+      - "ARPU(订单维度)"
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    category: "EFFICIENCY"
+    metric_type: "RATIO"
+    expression:
+      expr_type: "METRIC_RATIO"
+      numerator_metric_id: "METRIC_GMV"
+      denominator_metric_id: "METRIC_ORDER_CNT"
+      safe_division: true
+    default_time:
+      time_field_id: "ORDER_DATE"
+      time_window_id: "TIME_LAST_30D"
+      time_range_fallback:
+        type: "LAST_N"
+        value: 30
+        unit: "DAY"
+    default_filters:
+      - "LF_REVENUE_VALID_ORDER"
+    status_dependencies:
+      - "STATUS_VALID_FOR_REVENUE"
+    allowed_dimensions: ["DIM_COUNTRY", "DIM_CITY", "DIM_PRODUCT_LINE"]
+    allowed_time_grains: ["DAY", "WEEK", "MONTH", "QUARTER"]
+    is_additive: false
+    unit: "CURRENCY"
+    sensitivity: "MEDIUM"
+
+  # ================= HR 域 =================
+  - id: "METRIC_HEADCOUNT"
+    name: "在职人数（Headcount）"
+    description: "按在职员工口径过滤后，对 employee_id 计数。"
+    # 【合并】：来自 term_synonyms.txt 的 METRIC_HEADCOUNT
+    aliases:
+      - "HEADCOUNT"
+      - "人员编制"
+      - "在岗人数"
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    category: "CORE"
+    metric_type: "AGG"
+    expression:
+      expr_type: "SQL"
+      sql: "COUNT(employee_id)"
+    default_time:
+      time_field_id: "HIRE_DATE"
+      time_window_id: "TIME_AS_OF_TODAY"
+    default_filters:
+      - "LF_HR_ACTIVE_EMPLOYEE"
+    status_dependencies:
+      - "STATUS_EMPLOYMENT_ACTIVE"
+    allowed_dimensions: ["DIM_DEPARTMENT", "DIM_LOCATION_CITY", "DIM_LOCATION_COUNTRY"]
+    allowed_time_grains: []
+    is_additive: true
+    unit: "COUNT"
+    sensitivity: "MEDIUM"
+
+  - id: "METRIC_AVG_SALARY"
+    name: "平均月薪"
+    description: "在职员工范围内 salary 的平均值。"
+    # 【合并】：来自 term_synonyms.txt 的 METRIC_AVG_SALARY
+    aliases:
+      - "AVG_SAL"
+      - "平均工资"
+      - "平均薪资"
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    category: "COMPENSATION"
+    metric_type: "AGG"
+    expression:
+      expr_type: "SQL"
+      sql: "AVG(salary)"
+    default_time:
+      time_field_id: "HIRE_DATE"
+      time_window_id: "TIME_AS_OF_TODAY"
+    default_filters:
+      - "LF_HR_ACTIVE_EMPLOYEE"
+    status_dependencies:
+      - "STATUS_EMPLOYMENT_ACTIVE"
+    allowed_dimensions: ["DIM_DEPARTMENT", "DIM_LOCATION_CITY", "DIM_LOCATION_COUNTRY", "DIM_JOB"]
+    allowed_time_grains: ["MONTH", "QUARTER", "YEAR"]
+    is_additive: false
+    unit: "CURRENCY"
+    sensitivity: "HIGH"
+
+  - id: "METRIC_TENURE_DAYS"
+    name: "任职天数"
+    description: "从 hire_date 至当前日期的任职天数。"
+    # 【合并】：来自 term_synonyms.txt 的 METRIC_TENURE_DAYS
+    aliases:
+      - "TENURE_DAYS"
+      - "司龄"
+      - "工龄"
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    category: "TENURE"
+    metric_type: "AGG"
+    expression:
+      expr_type: "SQL"
+      sql: "DATEDIFF(CURDATE(), hire_date)"
+    default_time:
+      time_field_id: "HIRE_DATE"
+      time_window_id: "TIME_AS_OF_TODAY"
+    default_filters:
+      - "LF_HR_ACTIVE_EMPLOYEE"
+    status_dependencies:
+      - "STATUS_EMPLOYMENT_ACTIVE"
+    allowed_dimensions: ["DIM_DEPARTMENT", "DIM_LOCATION_CITY", "DIM_LOCATION_COUNTRY", "DIM_JOB"]
+    allowed_time_grains: []
+    is_additive: false
+    unit: "DAY"
+    sensitivity: "MEDIUM"

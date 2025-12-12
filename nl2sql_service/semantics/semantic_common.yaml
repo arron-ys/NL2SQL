@@ -1,0 +1,63 @@
+version: "2.0.1"
+description: "全局通用配置。包含全局时间窗口定义与通用 NLP 词汇表。"
+
+# ==========================================
+# 0. 全局默认设置 (Global Settings)
+# ==========================================
+global_settings:
+  default_time_window_id: "TIME_DEFAULT_30D"
+
+# ==========================================
+# 1. 全局时间窗口 (逻辑定义)
+# ==========================================
+time_windows:
+  - id: "TIME_DEFAULT_30D"
+    name: "默认时间窗口（近30天）"
+    aliases: ["DEF_30D", "近30天默认"]
+    template:
+      type: "LAST_N"
+      value: 30
+      unit: "DAY"
+
+  - id: "TIME_LAST_30D"
+    name: "最近30天"
+    aliases: ["最近一个月", "过去30天", "last 30 days"]
+    template:
+      type: "LAST_N"
+      value: 30
+      unit: "DAY"
+
+  - id: "TIME_LAST_90D"
+    name: "最近90天"
+    aliases: ["最近三个月", "过去90天", "last 90 days"]
+    template:
+      type: "LAST_N"
+      value: 90
+      unit: "DAY"
+
+  - id: "TIME_AS_OF_TODAY"
+    name: "当前时点"
+    aliases: ["到今天为止", "截止今天", "as of today"]
+    template:
+      type: "ABSOLUTE"
+      end: "CURRENT_DATE"
+
+# ==========================================
+# 2. 通用 NLP 词汇 (同义词典)
+# ==========================================
+# 这里只放不绑定具体指标/维度的通用词
+common_vocabulary:
+  - term: "同比"
+    aliases: ["YoY", "Year over Year", "比去年", "同期增长"]
+    type: "COMPARE_MODE"
+    value: "YOY"
+
+  - term: "环比"
+    aliases: ["MoM", "Month over Month", "比上月"]
+    type: "COMPARE_MODE"
+    value: "MOM"
+
+  - term: "前十名"
+    aliases: ["Top 10", "排名前十", "最高的10个"]
+    type: "LIMIT"
+    value: 10

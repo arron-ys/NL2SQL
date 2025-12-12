@@ -1,0 +1,493 @@
+version: "1.0.2"
+create_at: "2025-09-30"
+update_at: "2025-11-30"
+
+description: >
+  本 YAML 是 NL2SQL 语义安全与权限配置文件。
+  定义了角色、行级范围代码、RLS 策略片段以及详细的角色权限矩阵。
+
+# ============================================================
+# 1. 角色定义 (Roles)
+# ============================================================
+roles:
+  - role_id: "ROLE_CEO"
+    name: "首席执行官"
+    org_unit: "总裁办"
+    level: "C-LEVEL"
+    reports_to: null
+    description: "公司最高负责人，全面负责公司战略、经营目标与重大决策。"
+
+  - role_id: "ROLE_VP_ADMIN_HR"
+    name: "行政人力副总裁"
+    org_unit: "总裁办"
+    level: "C-LEVEL"
+    reports_to: "ROLE_CEO"
+    description: "分管行政管理部与人力资源部，负责公司行政管理与人力资源整体政策。"
+
+  - role_id: "ROLE_VP_IT"
+    name: "信息技术副总裁"
+    org_unit: "总裁办"
+    level: "C-LEVEL"
+    reports_to: "ROLE_CEO"
+    description: "分管信息技术部，负责公司信息化规划、系统建设与运维安全。"
+
+  - role_id: "ROLE_VP_SALES_FIN"
+    name: "销售财务副总裁"
+    org_unit: "总裁办"
+    level: "C-LEVEL"
+    reports_to: "ROLE_CEO"
+    description: "分管销售部与财务部，统筹公司营收目标与财务健康。"
+
+  - role_id: "ROLE_HR_HEAD"
+    name: "人力资源总监"
+    org_unit: "人力资源部"
+    level: "DEPT_HEAD"
+    reports_to: "ROLE_VP_ADMIN_HR"
+    description: "全面负责公司人力资源管理，包括招聘、绩效、薪酬与员工关系等。"
+
+  - role_id: "ROLE_HR_STAFF"
+    name: "人力资源专员"
+    org_unit: "人力资源部"
+    level: "STAFF"
+    reports_to: "ROLE_HR_HEAD"
+    description: "负责具体人事流程执行，如入转离、考勤维护、档案管理等。"
+
+  - role_id: "ROLE_SALES_HEAD"
+    name: "销售总监"
+    org_unit: "销售部"
+    level: "DEPT_HEAD"
+    reports_to: "ROLE_VP_SALES_FIN"
+    description: "负责销售团队管理、业绩达成与销售策略制定。"
+
+  - role_id: "ROLE_SALES_STAFF"
+    name: "销售代表"
+    org_unit: "销售部"
+    level: "STAFF"
+    reports_to: "ROLE_SALES_HEAD"
+    description: "一线销售人员，负责客户拓展与订单签约，仅查看个人业绩相关数据。"
+
+  - role_id: "ROLE_FIN_HEAD"
+    name: "财务总监"
+    org_unit: "财务部"
+    level: "DEPT_HEAD"
+    reports_to: "ROLE_VP_SALES_FIN"
+    description: "负责公司财务管理、成本控制、预算与财报输出。"
+
+  - role_id: "ROLE_FIN_STAFF"
+    name: "财务会计"
+    org_unit: "财务部"
+    level: "STAFF"
+    reports_to: "ROLE_FIN_HEAD"
+    description: "负责日常账务处理、出具财务报表与费用审核。"
+
+  - role_id: "ROLE_ADMIN_HEAD"
+    name: "行政经理"
+    org_unit: "行政管理部"
+    level: "DEPT_HEAD"
+    reports_to: "ROLE_VP_ADMIN_HR"
+    description: "负责行政团队管理、后勤保障与办公环境建设。"
+
+  - role_id: "ROLE_ADMIN_STAFF"
+    name: "行政专员"
+    org_unit: "行政管理部"
+    level: "STAFF"
+    reports_to: "ROLE_ADMIN_HEAD"
+    description: "负责日常行政事务执行，如物资采购、会议安排与固定资产管理。"
+
+  - role_id: "ROLE_IT_HEAD"
+    name: "信息技术经理"
+    org_unit: "信息技术部"
+    level: "DEPT_HEAD"
+    reports_to: "ROLE_VP_IT"
+    description: "负责 IT 团队管理、系统规划与关键项目推进。"
+
+  - role_id: "ROLE_IT_STAFF"
+    name: "系统工程师"
+    org_unit: "信息技术部"
+    level: "STAFF"
+    reports_to: "ROLE_IT_HEAD"
+    description: "负责系统开发、运维与数据平台相关技术工作。"
+
+# ============================================================
+# 2. 行级范围代码定义 (Row Scopes)
+# ============================================================
+row_scopes:
+  - code: "SELF"
+    description: "仅允许查看与当前登录用户直接相关的记录，例如个人档案或本人订单。"
+    example_condition: "employee_id = current_user_id OR sales_rep_id = current_user_id"
+
+  - code: "DEPT"
+    description: "允许查看当前用户所在部门范围内的数据。"
+    example_condition: "department_id IN current_user_dept_ids"
+
+  - code: "COMPANY"
+    description: "允许查看全公司范围内的数据。"
+    example_condition: "无额外过滤，或 company_id = current_company_id"
+
+  - code: "REGION"
+    description: "允许查看当前用户负责区域范围内的数据。"
+    example_condition: "region_id IN current_user_regions"
+
+# ============================================================
+# 3. 通用策略片段 (Policy Fragments - RLS)
+# ============================================================
+policy_fragments:
+  # HR — 本人记录
+  - fragment_id: "FRAG_HR_SELF_ONLY_RLS"
+    description: "员工只能查看与自己 employee_id 匹配的员工记录。"
+    type: "ROW_LEVEL"
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    raw_condition: "employee_id = {{ current_user.employee_id }}"
+
+  # HR — 本部门（及下属部门）员工
+  - fragment_id: "FRAG_HR_DEPT_RLS"
+    description: "仅能查看当前用户所在部门及其下属部门的员工记录。"
+    type: "ROW_LEVEL"
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    raw_condition: "department_id IN (SELECT dept_id FROM dim_org_scope WHERE manager_id = {{ current_user.employee_id }})"
+
+  # HR — 区域范围员工
+  - fragment_id: "FRAG_HR_REGION_RLS"
+    description: "仅能查看当前用户负责区域范围内的员工记录。"
+    type: "ROW_LEVEL"
+    domain_id: "HR"
+    entity_id: "ENT_EMPLOYEE"
+    raw_condition: "region IN (SELECT region_name FROM dim_region_scope WHERE manager_id = {{ current_user.employee_id }})"
+
+  # SALES — 本人订单
+  - fragment_id: "FRAG_SALES_SELF_ORDER_RLS"
+    description: "销售代表只能查看由自己负责的客户订单数据。"
+    type: "ROW_LEVEL"
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    raw_condition: "sales_rep_employee_number = {{ current_user.employee_id }}"
+
+  # SALES — 本部门订单
+  - fragment_id: "FRAG_SALES_DEPT_ORDER_RLS"
+    description: "部门负责人可以查看本部门销售代表负责的订单数据。"
+    type: "ROW_LEVEL"
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    raw_condition: "sales_rep_employee_number IN (SELECT e.employee_id FROM v_employee_profile e WHERE e.department_id IN (SELECT dept_id FROM dim_org_scope WHERE manager_id = {{ current_user.employee_id }}))"
+
+  # SALES — 区域订单
+  - fragment_id: "FRAG_SALES_REGION_ORDER_RLS"
+    description: "区域负责人可以查看本区域内客户的订单数据。"
+    type: "ROW_LEVEL"
+    domain_id: "SALES"
+    entity_id: "ENT_SALES_ORDER_ITEM"
+    raw_condition: "country IN (SELECT country_name FROM dim_region_scope WHERE manager_id = {{ current_user.employee_id }})"
+
+# ============================================================
+# 4. RowScopeCode 与 FRAG_ RLS 的绑定
+# ============================================================
+row_scope_bindings:
+  # SELF：查看“本人”相关数据
+  - row_scope_code: "SELF"
+    bindings:
+      - { domain_id: "HR", entity_id: "ENT_EMPLOYEE", fragment_ref: "FRAG_HR_SELF_ONLY_RLS" }
+      - { domain_id: "SALES", entity_id: "ENT_SALES_ORDER_ITEM", fragment_ref: "FRAG_SALES_SELF_ORDER_RLS" }
+
+  # DEPT：查看“本部门本团队”数据
+  - row_scope_code: "DEPT"
+    bindings:
+      - { domain_id: "HR", entity_id: "ENT_EMPLOYEE", fragment_ref: "FRAG_HR_DEPT_RLS" }
+      - { domain_id: "SALES", entity_id: "ENT_SALES_ORDER_ITEM", fragment_ref: "FRAG_SALES_DEPT_ORDER_RLS" }
+
+  # COMPANY：查看全公司数据（无额外 RLS）
+  - row_scope_code: "COMPANY"
+    bindings:
+      - { domain_id: "HR", entity_id: "ENT_EMPLOYEE", fragment_ref: null }
+      - { domain_id: "SALES", entity_id: "ENT_SALES_ORDER_ITEM", fragment_ref: null }
+
+  # REGION：查看“本区域”数据
+  - row_scope_code: "REGION"
+    bindings:
+      - { domain_id: "HR", entity_id: "ENT_EMPLOYEE", fragment_ref: "FRAG_HR_REGION_RLS" }
+      - { domain_id: "SALES", entity_id: "ENT_SALES_ORDER_ITEM", fragment_ref: "FRAG_SALES_REGION_ORDER_RLS" }
+
+# ============================================================
+# 5. 角色级安全策略 (Role Policies Matrix)
+# ============================================================
+role_policies:
+  - policy_id: "POLICY_ROLE_CEO"
+    role_id: "ROLE_CEO"
+    name: "首席执行官"
+    description: "可看全公司多域数据；HR与薪酬仅建议查看聚合，不做频繁个人下钻。"
+    scopes:
+      domain_access: ["ALL"]
+      entity_scope: ["ALL"]
+      metric_scope: ["ALL"]
+      dimension_scope: ["ALL"]
+      row_scope_code: "COMPANY"
+      detail_level: "AGG+DETAIL"
+      pii_access: "AGG_ONLY"
+      finance_sensitivity: "FULL"
+      hr_sensitivity: "AGG_ONLY"
+      cross_domain_join: "YES"
+      operation_scope: "AGG+DETAIL+TREND"
+      can_export: "YES"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_VP_ADMIN_HR"
+    role_id: "ROLE_VP_ADMIN_HR"
+    name: "行政人力副总裁"
+    description: "HR 域全面权限；行政域可看明细；财务销售仅看部分管理报表。"
+    scopes:
+      domain_access: ["HR", "ADMIN", "SHARED"]
+      entity_scope: ["HR_", "ADMIN_"]
+      metric_scope: ["HR_AGG", "ADMIN_AGG"]
+      dimension_scope: ["HR_", "ADMIN_"]
+      row_scope_code: "COMPANY"
+      detail_level: "AGG+DETAIL"
+      pii_access: "AGG+DETAIL"
+      finance_sensitivity: "AGG_ONLY"
+      hr_sensitivity: "FULL"
+      cross_domain_join: "LIMITED"
+      operation_scope: "AGG+DETAIL+TREND"
+      can_export: "LIMITED"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_VP_IT"
+    role_id: "ROLE_VP_IT"
+    name: "信息技术副总裁"
+    description: "技术视角为主，允许查看系统监控与性能相关数据，对业务明细限制访问。"
+    scopes:
+      domain_access: ["TECH", "SHARED"]
+      entity_scope: ["TECH_"]
+      metric_scope: ["TECH_MONITORING"]
+      dimension_scope: ["ALL"]
+      row_scope_code: "COMPANY"
+      detail_level: "AGG+LIMITED_DETAIL"
+      pii_access: "MASKED"
+      finance_sensitivity: "MASKED"
+      hr_sensitivity: "MASKED"
+      cross_domain_join: "LIMITED"
+      operation_scope: "AGG+DETAIL"
+      can_export: "NO"
+      env_scope: "SANDBOX"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_VP_SALES_FIN"
+    role_id: "ROLE_VP_SALES_FIN"
+    name: "销售财务副总裁"
+    description: "可看销售与财务全量指标与明细；HR 数据仅限成本、人头等聚合信息。"
+    scopes:
+      domain_access: ["SALES", "FINANCE", "SHARED"]
+      entity_scope: ["SALES_", "FIN_"]
+      metric_scope: ["SALES_ALL", "FIN_ALL"]
+      dimension_scope: ["ALL"]
+      row_scope_code: "COMPANY"
+      detail_level: "AGG+DETAIL"
+      pii_access: "AGG_ONLY"
+      finance_sensitivity: "FULL"
+      hr_sensitivity: "AGG_ONLY"
+      cross_domain_join: "YES"
+      operation_scope: "AGG+DETAIL+TREND"
+      can_export: "YES"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_HR_HEAD"
+    role_id: "ROLE_HR_HEAD"
+    name: "人力资源总监"
+    description: "仅在 HR 域内拥有本部门范围内的完整人事数据权限。"
+    scopes:
+      domain_access: ["HR", "SHARED"]
+      entity_scope: ["HR_"]
+      metric_scope: ["HR_ALL"]
+      dimension_scope: ["HR_"]
+      row_scope_code: "DEPT"
+      detail_level: "AGG+DETAIL"
+      pii_access: "FULL"
+      finance_sensitivity: "AGG_ONLY"
+      hr_sensitivity: "FULL"
+      cross_domain_join: "NO"
+      operation_scope: "AGG+DETAIL+TREND"
+      can_export: "LIMITED"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_HR_STAFF"
+    role_id: "ROLE_HR_STAFF"
+    name: "人力资源专员"
+    description: "负责日常人事操作，主要查看本部门员工的在职信息与基础人事数据。"
+    scopes:
+      domain_access: ["HR"]
+      entity_scope: ["HR_"]
+      metric_scope: ["HR_BASE"]
+      dimension_scope: ["HR_"]
+      row_scope_code: "DEPT"
+      detail_level: "AGG+DETAIL"
+      pii_access: "LIMITED"
+      finance_sensitivity: "AGG_ONLY"
+      hr_sensitivity: "FULL"
+      cross_domain_join: "NO"
+      operation_scope: "AGG+DETAIL"
+      can_export: "LIMITED"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_SALES_HEAD"
+    role_id: "ROLE_SALES_HEAD"
+    name: "销售总监"
+    description: "可查看本销售部门及下属团队的销售业绩与客户数据。"
+    scopes:
+      domain_access: ["SALES", "SHARED"]
+      entity_scope: ["SALES_"]
+      metric_scope: ["SALES_ALL"]
+      dimension_scope: ["SALES_"]
+      row_scope_code: "DEPT"
+      detail_level: "AGG+DETAIL"
+      pii_access: "LIMITED"
+      finance_sensitivity: "AGG_ONLY"
+      hr_sensitivity: "AGG_ONLY"
+      cross_domain_join: "LIMITED"
+      operation_scope: "AGG+DETAIL+TREND"
+      can_export: "YES"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_SALES_STAFF"
+    role_id: "ROLE_SALES_STAFF"
+    name: "销售代表"
+    description: "仅可查看与本人相关的订单与客户数据，不能查看他人明细。"
+    scopes:
+      domain_access: ["SALES"]
+      entity_scope: ["SALES_"]
+      metric_scope: ["SALES_SELF"]
+      dimension_scope: ["SALES_"]
+      row_scope_code: "SELF"
+      detail_level: "AGG+DETAIL"
+      pii_access: "LIMITED"
+      finance_sensitivity: "AGG_ONLY"
+      hr_sensitivity: "NONE"
+      cross_domain_join: "NO"
+      operation_scope: "AGG+DETAIL"
+      can_export: "LIMITED"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_FIN_HEAD"
+    role_id: "ROLE_FIN_HEAD"
+    name: "财务总监"
+    description: "可查看公司财务全量数据与报表，HR 数据仅限成本与人力费用。"
+    scopes:
+      domain_access: ["FINANCE", "SHARED"]
+      entity_scope: ["FIN_"]
+      metric_scope: ["FIN_ALL"]
+      dimension_scope: ["ALL"]
+      row_scope_code: "COMPANY"
+      detail_level: "AGG+DETAIL"
+      pii_access: "AGG_ONLY"
+      finance_sensitivity: "FULL"
+      hr_sensitivity: "AGG_ONLY"
+      cross_domain_join: "LIMITED"
+      operation_scope: "AGG+DETAIL+TREND"
+      can_export: "YES"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_FIN_STAFF"
+    role_id: "ROLE_FIN_STAFF"
+    name: "财务会计"
+    description: "负责账务与报表编制，不能随意与 HR 个人数据联表分析。"
+    scopes:
+      domain_access: ["FINANCE", "SHARED"]
+      entity_scope: ["FIN_"]
+      metric_scope: ["FIN_ALL"]
+      dimension_scope: ["ALL"]
+      row_scope_code: "COMPANY"
+      detail_level: "AGG+DETAIL"
+      pii_access: "MASKED"
+      finance_sensitivity: "FULL"
+      hr_sensitivity: "AGG_ONLY"
+      cross_domain_join: "NO"
+      operation_scope: "AGG+DETAIL"
+      can_export: "LIMITED"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_ADMIN_HEAD"
+    role_id: "ROLE_ADMIN_HEAD"
+    name: "行政经理"
+    description: "可查看行政管理相关数据，对人事与财务明细访问受限。"
+    scopes:
+      domain_access: ["ADMIN", "SHARED"]
+      entity_scope: ["ADMIN_"]
+      metric_scope: ["ADMIN_ALL"]
+      dimension_scope: ["ADMIN_"]
+      row_scope_code: "DEPT"
+      detail_level: "AGG+DETAIL"
+      pii_access: "MASKED"
+      finance_sensitivity: "AGG_ONLY"
+      hr_sensitivity: "AGG_ONLY"
+      cross_domain_join: "NO"
+      operation_scope: "AGG+DETAIL"
+      can_export: "LIMITED"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_ADMIN_STAFF"
+    role_id: "ROLE_ADMIN_STAFF"
+    name: "行政专员"
+    description: "负责日常行政执行，主要查看行政域运营数据，不接触高敏财务人事明细。"
+    scopes:
+      domain_access: ["ADMIN"]
+      entity_scope: ["ADMIN_"]
+      metric_scope: ["ADMIN_BASE"]
+      dimension_scope: ["ADMIN_"]
+      row_scope_code: "DEPT"
+      detail_level: "AGG+DETAIL"
+      pii_access: "MASKED"
+      finance_sensitivity: "AGG_ONLY"
+      hr_sensitivity: "AGG_ONLY"
+      cross_domain_join: "NO"
+      operation_scope: "AGG+DETAIL"
+      can_export: "LIMITED"
+      env_scope: "PROD"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_IT_HEAD"
+    role_id: "ROLE_IT_HEAD"
+    name: "信息技术经理"
+    description: "以系统监控与平台运维为主，可查看技术与日志相关数据，对业务明细受控。"
+    scopes:
+      domain_access: ["TECH", "SHARED"]
+      entity_scope: ["TECH_"]
+      metric_scope: ["TECH_MONITORING"]
+      dimension_scope: ["ALL"]
+      row_scope_code: "COMPANY"
+      detail_level: "AGG+LIMITED_DETAIL"
+      pii_access: "MASKED"
+      finance_sensitivity: "MASKED"
+      hr_sensitivity: "MASKED"
+      cross_domain_join: "LIMITED"
+      operation_scope: "AGG+DETAIL"
+      can_export: "NO"
+      env_scope: "SANDBOX"
+      audit_required: "YES"
+
+  - policy_id: "POLICY_ROLE_IT_STAFF"
+    role_id: "ROLE_IT_STAFF"
+    name: "系统工程师"
+    description: "执行开发与运维任务，仅在技术域查看监控与日志相关数据。"
+    scopes:
+      domain_access: ["TECH"]
+      entity_scope: ["TECH_"]
+      metric_scope: ["TECH_MONITORING"]
+      dimension_scope: ["ALL"]
+      row_scope_code: "COMPANY"
+      detail_level: "AGG+LIMITED_DETAIL"
+      pii_access: "MASKED"
+      finance_sensitivity: "MASKED"
+      hr_sensitivity: "MASKED"
+      cross_domain_join: "NO"
+      operation_scope: "AGG+DETAIL"
+      can_export: "NO"
+      env_scope: "SANDBOX"
+      audit_required: "YES"
