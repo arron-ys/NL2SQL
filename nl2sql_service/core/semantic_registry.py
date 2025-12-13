@@ -32,6 +32,9 @@ logger = get_logger(__name__)
 QDRANT_COLLECTION_NAME = "semantic_terms"
 # 指纹存储的 Key（存储在 Qdrant 的 payload 中）
 FINGERPRINT_KEY = "_system_fingerprint"
+# 默认本地存储路径（项目根目录下的 qdrant_data/）
+# 计算方式：从当前文件 (semantic_registry.py) 向上三级到达项目根目录
+DEFAULT_STORAGE_PATH = Path(__file__).parent.parent.parent / "qdrant_data"
 
 
 class SemanticRegistry:
@@ -428,21 +431,59 @@ class SemanticRegistry:
         logger.info("Semantic registry loaded successfully")
     
     def _init_clients(self) -> None:
-        """初始化 Qdrant 客户端"""
-        # 初始化 Qdrant 客户端
-        qdrant_host = os.getenv("QDRANT_HOST", "localhost")
-        qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
-        qdrant_api_key = os.getenv("QDRANT_API_KEY")
+        """初始化 Qdrant 客户端
         
-        qdrant_kwargs = {
-            "host": qdrant_host,
-            "port": qdrant_port,
-        }
-        if qdrant_api_key:
-            qdrant_kwargs["api_key"] = qdrant_api_key
+        支持三种模式：
+        - local: 本地文件系统存储（默认）
+        - memory: 内存存储（临时，进程退出后丢失）
+        - remote: 远程 Qdrant 服务
         
-        self.qdrant_client = AsyncQdrantClient(**qdrant_kwargs)
-        logger.info(f"Initialized Qdrant client: {qdrant_host}:{qdrant_port}")
+        默认行为：如果未设置 VECTOR_STORE_MODE 或值为无效，一律使用 local 模式。
+        Remote 模式仅在明确设置 VECTOR_STORE_MODE=remote 时启用。
+        """
+        mode = os.getenv("VECTOR_STORE_MODE", "local").lower()
+        
+        if mode == "memory":
+            # Memory 模式：使用内存存储
+            self.qdrant_client = AsyncQdrantClient(location=":memory:")
+            logger.info("Initialized Qdrant client in MEMORY mode")
+        
+        elif mode == "remote":
+            # Remote 模式：连接到远程 Qdrant 服务
+            qdrant_api_key = os.getenv("QDRANT_API_KEY")
+            qdrant_kwargs = {}
+            
+            if qdrant_api_key:
+                qdrant_kwargs["api_key"] = qdrant_api_key
+            
+            # 优先使用 QDRANT_URL（如果设置）
+            qdrant_url = os.getenv("QDRANT_URL")
+            if qdrant_url:
+                self.qdrant_client = AsyncQdrantClient(url=qdrant_url, **qdrant_kwargs)
+                logger.info(f"Initialized Qdrant client in REMOTE mode, url: {qdrant_url}")
+            else:
+                # 回退到 Host + Port 方式（向后兼容）
+                qdrant_host = os.getenv("QDRANT_HOST", "localhost")
+                qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
+                qdrant_kwargs["host"] = qdrant_host
+                qdrant_kwargs["port"] = qdrant_port
+                self.qdrant_client = AsyncQdrantClient(**qdrant_kwargs)
+                logger.info(f"Initialized Qdrant client in REMOTE mode, host: {qdrant_host}:{qdrant_port}")
+        
+        else:
+            # Local 模式（默认）：使用本地文件系统存储
+            # 如果 mode 不是 "memory" 或 "remote"，一律使用 local 模式
+            store_path_str = os.getenv("VECTOR_STORE_PATH")
+            if store_path_str:
+                store_path = Path(store_path_str)
+            else:
+                store_path = DEFAULT_STORAGE_PATH
+            
+            # 确保目录存在
+            store_path.mkdir(parents=True, exist_ok=True)
+            
+            self.qdrant_client = AsyncQdrantClient(path=str(store_path))
+            logger.info(f"Initialized Qdrant client in LOCAL mode, storage path: {store_path}")
     
     async def initialize(self, yaml_path: str = "semantics") -> None:
         """
