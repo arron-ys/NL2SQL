@@ -451,6 +451,203 @@ async def execute_nl2sql(
         ) from e
 
 
+@app.post("/nl2sql/plan")
+async def generate_plan(
+    request: QueryRequest
+) -> QueryPlan:
+    """
+    生成查询计划（调试端点）
+    
+    执行 Stage 1-3，返回验证后的查询计划：
+    1. Stage 1: Query Decomposition
+    2. Stage 2: Plan Generation（仅处理第一个子查询）
+    3. Stage 3: Validation
+    
+    Args:
+        request: 查询请求对象
+    
+    Returns:
+        QueryPlan: 验证后的查询计划 JSON
+    
+    Raises:
+        HTTPException: 当处理失败时抛出
+    """
+    # 设置请求 ID
+    temp_request_id = f"temp-{os.getpid()}-{id(request)}"
+    set_request_id(temp_request_id)
+    
+    logger.info(
+        "Received plan generation request",
+        extra={
+            "user_id": request.user_id,
+            "role_id": request.role_id,
+            "tenant_id": request.tenant_id,
+            "question_length": len(request.question)
+        }
+    )
+    
+    try:
+        # 确保注册表已初始化
+        if registry is None:
+            raise RuntimeError("Semantic registry not initialized")
+        
+        # Stage 1: Query Decomposition
+        query_desc = await stage1_decomposition.process_request(
+            question=request.question,
+            user_id=request.user_id,
+            role_id=request.role_id,
+            tenant_id=request.tenant_id
+        )
+        
+        # 更新请求 ID
+        actual_request_id = query_desc.request_context.request_id
+        set_request_id(actual_request_id)
+        
+        logger.info(
+            "Stage 1 completed",
+            extra={
+                "request_id": actual_request_id,
+                "sub_query_count": len(query_desc.sub_queries)
+            }
+        )
+        
+        # 检查是否有子查询
+        if not query_desc.sub_queries:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No sub-queries generated from the question"
+            )
+        
+        # 简化逻辑：只处理第一个子查询
+        first_sub_query = query_desc.sub_queries[0]
+        
+        # Stage 2: Plan Generation
+        plan = await stage2_plan_generation.process_subquery(
+            sub_query=first_sub_query,
+            context=query_desc.request_context,
+            registry=registry
+        )
+        
+        logger.info(
+            "Stage 2 completed",
+            extra={
+                "request_id": actual_request_id,
+                "intent": plan.intent.value
+            }
+        )
+        
+        # Stage 3: Validation
+        validated_plan = await stage3_validation.validate_and_normalize_plan(
+            plan=plan,
+            context=query_desc.request_context,
+            registry=registry
+        )
+        
+        logger.info(
+            "Plan generation completed successfully",
+            extra={
+                "request_id": actual_request_id,
+                "intent": validated_plan.intent.value,
+                "metrics_count": len(validated_plan.metrics),
+                "dimensions_count": len(validated_plan.dimensions)
+            }
+        )
+        
+        return validated_plan
+    
+    except Exception as e:
+        logger.error(
+            "Plan generation failed",
+            extra={
+                "error": str(e),
+                "error_type": type(e).__name__
+            },
+            exc_info=True
+        )
+        # 异常会被全局异常处理器捕获
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        ) from e
+
+
+@app.post("/nl2sql/sql")
+async def generate_sql_from_plan(
+    request: SqlGenRequest
+) -> Dict[str, str]:
+    """
+    从查询计划生成 SQL（调试端点）
+    
+    直接基于已验证的计划生成 SQL，不涉及 LLM。
+    执行 Stage 4: SQL Generation
+    
+    Args:
+        request: SQL 生成请求对象，包含计划、上下文和数据库类型
+    
+    Returns:
+        Dict[str, str]: 包含生成的 SQL 查询字符串
+    
+    Raises:
+        HTTPException: 当处理失败时抛出
+    """
+    # 设置请求 ID
+    actual_request_id = request.request_context.request_id
+    set_request_id(actual_request_id)
+    
+    logger.info(
+        "Received SQL generation request",
+        extra={
+            "request_id": actual_request_id,
+            "intent": request.plan.intent.value,
+            "db_type": request.db_type
+        }
+    )
+    
+    try:
+        # 确保注册表已初始化
+        if registry is None:
+            raise RuntimeError("Semantic registry not initialized")
+        
+        # 获取数据库类型
+        from config.pipeline_config import get_pipeline_config
+        config = get_pipeline_config()
+        db_type = request.db_type if request.db_type else config.db_type.value
+        
+        # Stage 4: SQL Generation（不使用 LLM）
+        sql = await stage4_sql_gen.generate_sql(
+            plan=request.plan,
+            context=request.request_context,
+            registry=registry,
+            db_type=db_type
+        )
+        
+        logger.info(
+            "SQL generation completed successfully",
+            extra={
+                "request_id": actual_request_id,
+                "sql_length": len(sql),
+                "db_type": db_type
+            }
+        )
+        
+        return {"sql": sql}
+    
+    except Exception as e:
+        logger.error(
+            "SQL generation failed",
+            extra={
+                "error": str(e),
+                "error_type": type(e).__name__
+            },
+            exc_info=True
+        )
+        # 异常会被全局异常处理器捕获
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        ) from e
+
+
 async def _execute_with_debug(
     query_desc,
     registry: SemanticRegistry,
