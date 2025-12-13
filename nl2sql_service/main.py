@@ -17,7 +17,12 @@ from core.pipeline_orchestrator import run_pipeline
 from core.semantic_registry import SemanticRegistry
 from schemas.answer import FinalAnswer
 from schemas.error import PipelineError
+from schemas.plan import QueryPlan
+from schemas.request import RequestContext
 from stages import stage1_decomposition
+from stages import stage2_plan_generation
+from stages import stage3_validation
+from stages import stage4_sql_gen
 from stages import stage6_answer
 from utils.log_manager import get_logger, set_request_id
 
@@ -44,6 +49,7 @@ class QueryRequest(BaseModel):
     查询请求模型
     
     用户提交的自然语言查询请求。
+    用于 `/nl2sql/execute` 和 `/nl2sql/plan` 端点。
     """
     question: str = Field(
         ...,
@@ -71,6 +77,28 @@ class QueryRequest(BaseModel):
     include_trace: bool = Field(
         default=False,
         description="是否包含调试信息（中间产物）"
+    )
+
+
+class SqlGenRequest(BaseModel):
+    """
+    SQL 生成请求模型
+    
+    用于 `/nl2sql/sql` 端点，直接基于已验证的计划生成 SQL。
+    """
+    plan: QueryPlan = Field(
+        ...,
+        description="已验证的查询计划对象"
+    )
+    
+    request_context: RequestContext = Field(
+        ...,
+        description="请求上下文，包含用户信息和 RLS 策略所需的数据"
+    )
+    
+    db_type: Optional[str] = Field(
+        default=None,
+        description="数据库类型（如 'mysql', 'postgresql'），如果未提供则使用配置中的默认值"
     )
 
 
