@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 # 按你的项目真实 import 路径调整
-import nl2sql_service.core.semantic_registry as sr
+import core.semantic_registry as sr
 
 
 def _make_registry_instance():
