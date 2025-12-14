@@ -5,11 +5,18 @@ Logging Management Module
 使用 contextvars 存储 request_id，确保在异步环境中正确传递上下文。
 """
 import contextvars
+import os
 import sys
 from contextlib import contextmanager
 from typing import Optional
 
 from loguru import logger
+
+# ============================================================
+# PID Guard：防止多进程/热重载场景下重复配置
+# ============================================================
+# 记录已配置的进程 ID，确保每个进程只配置一次
+_CONFIGURED_PID: Optional[int] = None
 
 # ============================================================
 # ContextVar 定义
@@ -37,11 +44,39 @@ def configure_logger():
     配置 loguru logger
     
     核心逻辑：
-    1. 移除默认处理器
-    2. 使用 filter 函数在 handler 级别注入 request_id
-    3. filter 函数从 contextvars 中获取 request_id 并注入到 record["extra"] 中
-    4. 添加新的处理器，输出到 stdout
+    1. 使用 PID guard 确保每个进程只配置一次
+    2. 从环境变量读取日志级别（LOG_LEVEL 或 LOGURU_LEVEL），默认 INFO
+    3. 验证日志级别是否在白名单内，非法值回退到 INFO
+    4. 移除默认处理器
+    5. 使用 filter 函数在 handler 级别注入 request_id
+    6. filter 函数从 contextvars 中获取 request_id 并注入到 record["extra"] 中
+    7. 添加新的处理器，输出到 stdout
+    
+    注意：使用 PID guard 而非简单的布尔标志，以支持：
+    - 热重载场景（uvicorn --reload）
+    - 多 worker 场景（gunicorn --workers N）
+    - gunicorn --preload 场景（主进程和 worker 进程都需要配置）
     """
+    global _CONFIGURED_PID
+    
+    # PID Guard：检查当前进程是否已配置
+    current_pid = os.getpid()
+    if _CONFIGURED_PID == current_pid:
+        # 当前进程已配置，直接返回
+        return
+    
+    # 读取环境变量决定日志级别
+    # 优先读取 LOG_LEVEL，其次 LOGURU_LEVEL，默认 INFO
+    log_level = os.getenv("LOG_LEVEL") or os.getenv("LOGURU_LEVEL") or "INFO"
+    log_level = log_level.upper()
+    
+    # 允许的日志级别白名单
+    valid_levels = {"TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
+    
+    # 验证日志级别，非法值回退到 INFO
+    if log_level not in valid_levels:
+        log_level = "INFO"
+    
     # 移除默认的 handler
     logger.remove()
     
@@ -63,10 +98,16 @@ def configure_logger():
         sys.stdout,
         format=LOG_FORMAT,
         filter=inject_request_id,  # 使用 filter 在 handler 级别注入
-        level="INFO",
+        level=log_level,  # 使用从环境变量读取的日志级别
         colorize=True,
         enqueue=True,  # 支持多进程/多线程安全
     )
+    
+    # 打印配置信息（此时 request_id 应为默认值 "system"）
+    logger.info("Logger configured: level={}", log_level)
+    
+    # 标记当前进程已配置
+    _CONFIGURED_PID = current_pid
 
 
 # ============================================================

@@ -16,7 +16,7 @@ from pypika import (
     Table,
     functions as fn
 )
-from pypika.terms import CustomCriterion
+from pypika.terms import Term
 
 from core.dialect_adapter import DialectAdapter
 from core.semantic_registry import SemanticRegistry
@@ -33,6 +33,40 @@ from schemas.request import RequestContext
 from utils.log_manager import get_logger
 
 logger = get_logger(__name__)
+
+
+# ============================================================
+# 自定义类：用于包装原始 SQL 字符串
+# ============================================================
+class CustomCriterion(Term):
+    """
+    自定义 Criterion 类，用于包装原始 SQL 字符串
+    
+    在 PyPika 中，当需要直接使用原始 SQL 字符串时（如复杂的表达式、RLS 策略等），
+    可以使用此类来包装 SQL 字符串，使其可以作为 SELECT 字段或 WHERE 条件使用。
+    """
+    def __init__(self, sql: str, alias: Optional[str] = None):
+        """
+        初始化 CustomCriterion
+        
+        Args:
+            sql: 原始 SQL 字符串
+            alias: 可选的别名
+        """
+        super().__init__(alias=alias)
+        self.sql = sql
+    
+    def get_sql(self, **kwargs) -> str:
+        """
+        返回原始 SQL 字符串
+        
+        Args:
+            **kwargs: 额外的参数（用于兼容 PyPika API）
+        
+        Returns:
+            str: 原始 SQL 字符串
+        """
+        return self.sql
 
 
 # ============================================================
@@ -540,6 +574,7 @@ async def generate_sql(
             extra={"error": str(e), "query": str(query)}
         )
         raise Stage4Error(f"Failed to render SQL: {str(e)}") from e
+
 
 
 

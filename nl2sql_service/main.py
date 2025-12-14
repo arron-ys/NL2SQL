@@ -316,6 +316,17 @@ async def global_exception_handler(request: Request, exc: Exception):
 # API 端点
 # ============================================================
 @app.get("/")
+async def root():
+    """
+    根端点
+    
+    Returns:
+        Dict[str, str]: 服务信息
+    """
+    return {"status": "ok", "service": "NL2SQL Service"}
+
+
+@app.get("/health")
 async def health_check():
     """
     健康检查端点
