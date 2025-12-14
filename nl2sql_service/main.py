@@ -6,6 +6,9 @@ NL2SQL 服务的 FastAPI 入口点，连接所有组件形成可运行的 Web �
 对应详细设计文档 Section 5 的定义。
 """
 import os
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Dict, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -28,17 +31,105 @@ from utils.log_manager import get_logger, set_request_id
 
 logger = get_logger(__name__)
 
+# 全局语义注册表实例
+registry: Optional[SemanticRegistry] = None
+
+
+# ============================================================
+# 生命周期管理
+# ============================================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    应用生命周期管理
+    
+    使用 lifespan context manager 替代已废弃的 @app.on_event。
+    在 yield 之前执行启动逻辑，在 yield 之后执行关闭逻辑。
+    """
+    global registry
+    
+    # ========== 启动逻辑 ==========
+    logger.info("Starting NL2SQL Service...")
+    
+    try:
+        # 获取语义注册表单例
+        registry = await SemanticRegistry.get_instance()
+        
+        # 获取 YAML 文件路径（从环境变量或使用默认值）
+        yaml_path = os.getenv("SEMANTICS_YAML_PATH", "semantics")
+        
+        # 初始化并加载 YAML 配置
+        await registry.initialize(yaml_path)
+        
+        logger.info(
+            "Semantic registry initialized successfully",
+            extra={"yaml_path": yaml_path}
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to initialize semantic registry",
+            extra={"error": str(e)}
+        )
+        raise
+    
+    # ========== 运行阶段 ==========
+    try:
+        yield
+    finally:
+        # ========== 关闭逻辑 ==========
+        logger.info("Shutting down NL2SQL Service...")
+        
+        try:
+            # 关闭数据库连接池
+            await close_all()
+            logger.info("Database connections closed")
+        except Exception as e:
+            logger.error(
+                "Error during shutdown",
+                extra={"error": str(e)}
+            )
+
+
 # ============================================================
 # FastAPI 应用实例
 # ============================================================
 app = FastAPI(
     title="NL2SQL Service",
     description="自然语言转 SQL 查询服务",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
-# 全局语义注册表实例
-registry: Optional[SemanticRegistry] = None
+
+# ============================================================
+# Middleware: Request ID 注入
+# ============================================================
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """
+    请求 ID 中间件
+    
+    从请求 header 中读取或生成 request_id，并注入到日志上下文中。
+    支持从上游透传 X-Trace-ID（优先）或 X-Request-ID（兼容）。
+    """
+    # 从 header 读取 ID：优先 X-Trace-ID，其次 X-Request-ID
+    request_id = request.headers.get("X-Trace-ID") or request.headers.get("X-Request-ID")
+    
+    # 如果不存在，则生成新的 ID（沿用项目原有格式：req-YYYYMMDDHHMMSS-xxxxxxxx）
+    if not request_id:
+        request_id = f"req-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    
+    # 调用 log_manager.set_request_id() 写入 contextvar
+    set_request_id(request_id)
+    
+    # 处理请求
+    response = await call_next(request)
+    
+    # 在响应 header 中写回：至少写 X-Trace-ID，并可同时写 X-Request-ID（值相同）
+    response.headers["X-Trace-ID"] = request_id
+    response.headers["X-Request-ID"] = request_id
+    
+    return response
 
 
 # ============================================================
@@ -164,96 +255,8 @@ class DebugResponse(BaseModel):
 
 
 # ============================================================
-# 生命周期事件
-# ============================================================
-@app.on_event("startup")
-async def startup_event():
-    """
-    应用启动事件
-    
-    初始化语义注册表，加载 YAML 配置。
-    """
-    global registry
-    
-    logger.info("Starting NL2SQL Service...")
-    
-    try:
-        # 获取语义注册表单例
-        registry = await SemanticRegistry.get_instance()
-        
-        # 获取 YAML 文件路径（从环境变量或使用默认值）
-        yaml_path = os.getenv("SEMANTICS_YAML_PATH", "semantics")
-        
-        # 初始化并加载 YAML 配置
-        await registry.initialize(yaml_path)
-        
-        logger.info(
-            "Semantic registry initialized successfully",
-            extra={"yaml_path": yaml_path}
-        )
-    except Exception as e:
-        logger.error(
-            "Failed to initialize semantic registry",
-            extra={"error": str(e)}
-        )
-        raise
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """
-    应用关闭事件
-    
-    清理资源，关闭数据库连接。
-    """
-    logger.info("Shutting down NL2SQL Service...")
-    
-    try:
-        # 关闭数据库连接池
-        await close_all()
-        logger.info("Database connections closed")
-    except Exception as e:
-        logger.error(
-            "Error during shutdown",
-            extra={"error": str(e)}
-        )
-
-
-# ============================================================
 # 全局异常处理器
 # ============================================================
-@app.exception_handler(PipelineError)
-async def pipeline_error_handler(request: Request, exc: PipelineError):
-    """
-    处理 PipelineError 异常
-    
-    将 PipelineError 转换为标准化的错误响应。
-    """
-    logger.error(
-        "Pipeline error occurred",
-        extra={
-            "stage": exc.stage,
-            "code": exc.code,
-            "message": exc.message,
-            "path": request.url.path
-        }
-    )
-    
-    error_response = ErrorResponse(
-        status="error",
-        error={
-            "stage": exc.stage,
-            "code": exc.code,
-            "message": exc.message
-        }
-    )
-    
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=error_response.model_dump()
-    )
-
-
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
@@ -344,10 +347,6 @@ async def execute_nl2sql(
     Raises:
         HTTPException: 当处理失败时抛出
     """
-    # 设置请求 ID（将在 Stage 1 中生成，这里先设置一个临时值）
-    temp_request_id = f"temp-{os.getpid()}-{id(request)}"
-    set_request_id(temp_request_id)
-    
     logger.info(
         "Received NL2SQL request",
         extra={
@@ -372,9 +371,8 @@ async def execute_nl2sql(
             tenant_id=request.tenant_id
         )
         
-        # 更新请求 ID（Stage 1 会生成新的 request_id）
+        # 获取当前请求 ID（由 middleware 或 Stage 1 设置）
         actual_request_id = query_desc.request_context.request_id
-        set_request_id(actual_request_id)
         
         logger.info(
             "Stage 1 completed",
@@ -472,10 +470,6 @@ async def generate_plan(
     Raises:
         HTTPException: 当处理失败时抛出
     """
-    # 设置请求 ID
-    temp_request_id = f"temp-{os.getpid()}-{id(request)}"
-    set_request_id(temp_request_id)
-    
     logger.info(
         "Received plan generation request",
         extra={
@@ -499,9 +493,8 @@ async def generate_plan(
             tenant_id=request.tenant_id
         )
         
-        # 更新请求 ID
+        # 获取当前请求 ID（由 middleware 或 Stage 1 设置）
         actual_request_id = query_desc.request_context.request_id
-        set_request_id(actual_request_id)
         
         logger.info(
             "Stage 1 completed",
@@ -590,9 +583,8 @@ async def generate_sql_from_plan(
     Raises:
         HTTPException: 当处理失败时抛出
     """
-    # 设置请求 ID
+    # 获取请求 ID（由 middleware 设置，或从 request_context 获取）
     actual_request_id = request.request_context.request_id
-    set_request_id(actual_request_id)
     
     logger.info(
         "Received SQL generation request",

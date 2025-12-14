@@ -15,7 +15,7 @@ from schemas.request import (
     RequestContext,
     SubQueryItem
 )
-from utils.log_manager import get_logger, set_request_id
+from utils.log_manager import get_logger, get_request_id, set_request_id
 from utils.prompt_templates import PROMPT_SUBQUERY_DECOMPOSITION
 
 logger = get_logger(__name__)
@@ -61,15 +61,17 @@ async def process_request(
         Stage1Error: 当 LLM 输出解析失败或格式不符合预期时抛出
     """
     # Step 1: Build RequestContext
-    # 生成唯一的 request_id（使用 uuid 和 timestamp）
-    request_id = f"req-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    # 从日志上下文获取 request_id（由 middleware 在 HTTP 请求入口处设置）
+    request_id = get_request_id()
+    
+    # 如果获取到的是默认值 "system"，说明不是 HTTP 请求路径，需要生成新的 ID 作为兜底
+    if request_id == "system":
+        request_id = f"req-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        set_request_id(request_id)
     
     # 获取当前日期，格式为 "YYYY-MM-DD"
     current_date = date.today()
     current_date_str = current_date.strftime("%Y-%m-%d")
-    
-    # 设置日志上下文
-    set_request_id(request_id)
     
     logger.info(
         "Starting Stage 1: Query Decomposition",
@@ -125,14 +127,7 @@ async def process_request(
         raise Stage1Error(f"Failed to call LLM for query decomposition: {str(e)}") from e
     
     # Step 3: Parse and Validate LLM Output
-    try:
-        # parsed_response 已经是解析后的 JSON 对象，无需再次解析
-    except json.JSONDecodeError as e:
-        logger.error(
-            "Failed to parse LLM response as JSON",
-            extra={"error": str(e), "response_preview": llm_response[:200]}
-        )
-        raise Stage1Error(f"Failed to parse LLM response as JSON: {str(e)}") from e
+    # parsed_response 已经是解析后的 JSON 对象（由 ai_client.generate_decomposition 返回），无需再次解析
     
     # 验证响应结构
     if "sub_queries" not in parsed_response:
