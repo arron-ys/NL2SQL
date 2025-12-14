@@ -1,14 +1,14 @@
 ﻿name: CI
 
 on:
-  pull_request:
-    branches: [ "main" ]
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -18,9 +18,12 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     defaults:
       run:
         shell: bash
+        working-directory: nl2sql_service
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -30,31 +33,25 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: |
-            requirements*.txt
-            **/requirements*.txt
-            pyproject.toml
-            **/pyproject.toml
-            poetry.lock
-            **/poetry.lock
+          cache-dependency-path: nl2sql_service/requirements.txt
 
       - name: Install dependencies
         run: |
           python -m pip install -U pip wheel
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          elif [ -f pyproject.toml ]; then
-            pip install -e .
-          elif [ -f nl2sql_service/requirements.txt ]; then
-            pip install -r nl2sql_service/requirements.txt
-          else
-            echo "No dependency file found; installing pytest only."
-          fi
-          pip install -U pytest
+          pip install -r requirements.txt
 
       - name: Run tests
         env:
-          PYTHONPATH: ${{ github.workspace }}
-          NL2SQL_ENV: ci
+          PYTHONPATH: ${{ github.workspace }}/nl2sql_service
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'fake-key-for-test' }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY || 'fake-key-for-test' }}
+          DB_HOST: localhost
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: ""
+          DB_NAME: test_db
+          DB_TYPE: mysql
+          SEMANTICS_YAML_PATH: semantics
+          VECTOR_STORE_MODE: memory
         run: |
-          pytest -q -m "not integration" --disable-warnings
+          pytest tests/ -v --tb=short -m "not integration"
