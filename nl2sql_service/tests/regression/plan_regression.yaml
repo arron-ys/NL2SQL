@@ -1,0 +1,139 @@
+# 语义YAML变更的最小回归集
+# 维护至少10条回归用例，覆盖主要语义概念
+# 用例应涵盖：不同意图类型、主要指标、主要维度、常用过滤器、时间范围表达式
+
+regression_cases:
+  - id: REG_001
+    question: "统计每个部门的员工数量"
+    expected_intent: "AGG"
+    expected_metrics: ["METRIC_EMPLOYEE_COUNT"]
+    expected_dimensions: ["DIM_DEPARTMENT"]
+    last_verified: "2025-12-14"
+    description: "基础聚合查询，按部门分组统计员工数量"
+
+  - id: REG_002
+    question: "查询最近7天的销售额"
+    expected_intent: "TREND"
+    expected_metrics: ["METRIC_REVENUE"]
+    expected_time_range:
+      type: "LAST_N"
+      value: 7
+      unit: "DAY"
+    last_verified: "2025-12-14"
+    description: "趋势查询，最近7天销售额"
+
+  - id: REG_003
+    question: "显示所有订单明细"
+    expected_intent: "DETAIL"
+    expected_metrics: []
+    expected_dimensions: []
+    last_verified: "2025-12-14"
+    description: "明细查询，返回所有订单记录"
+
+  - id: REG_004
+    question: "统计每个地区的GMV，按GMV降序排列"
+    expected_intent: "AGG"
+    expected_metrics: ["METRIC_GMV"]
+    expected_dimensions: ["DIM_REGION"]
+    expected_order_by:
+      - id: "METRIC_GMV"
+        direction: "DESC"
+    last_verified: "2025-12-14"
+    description: "聚合查询带排序"
+
+  - id: REG_005
+    question: "查询2024年1月的订单数量"
+    expected_intent: "AGG"
+    expected_metrics: ["METRIC_ORDER_COUNT"]
+    expected_time_range:
+      type: "ABSOLUTE"
+      start: "2024-01-01T00:00:00Z"
+      end: "2024-01-31T23:59:59Z"
+    last_verified: "2024-12-14"
+    description: "绝对时间范围查询"
+
+  - id: REG_006
+    question: "统计各部门的销售额和利润"
+    expected_intent: "AGG"
+    expected_metrics: ["METRIC_REVENUE", "METRIC_PROFIT"]
+    expected_dimensions: ["DIM_DEPARTMENT"]
+    last_verified: "2025-12-14"
+    description: "多指标聚合查询"
+
+  - id: REG_007
+    question: "查询最近30天的每日销售额趋势"
+    expected_intent: "TREND"
+    expected_metrics: ["METRIC_REVENUE"]
+    expected_dimensions:
+      - id: "DIM_DATE"
+        time_grain: "DAY"
+    expected_time_range:
+      type: "LAST_N"
+      value: 30
+      unit: "DAY"
+    last_verified: "2025-12-14"
+    description: "趋势查询带时间粒度"
+
+  - id: REG_008
+    question: "查询北京的订单，按金额降序排列，限制前10条"
+    expected_intent: "DETAIL"
+    expected_filters:
+      - id: "DIM_CITY"
+        op: "EQ"
+        values: ["北京"]
+    expected_order_by:
+      - id: "METRIC_AMOUNT"
+        direction: "DESC"
+    expected_limit: 10
+    last_verified: "2025-12-14"
+    description: "明细查询带过滤、排序和限制"
+
+  - id: REG_009
+    question: "统计每个产品类别的销售额，只显示销售额大于10000的类别"
+    expected_intent: "AGG"
+    expected_metrics: ["METRIC_REVENUE"]
+    expected_dimensions: ["DIM_PRODUCT_CATEGORY"]
+    expected_filters:
+      - id: "METRIC_REVENUE"
+        op: "GT"
+        values: [10000]
+    last_verified: "2025-12-14"
+    description: "聚合查询带指标过滤"
+
+  - id: REG_010
+    question: "查询最近一个月的周销售额对比"
+    expected_intent: "TREND"
+    expected_metrics:
+      - id: "METRIC_REVENUE"
+        compare_mode: "WOW"
+    expected_dimensions:
+      - id: "DIM_DATE"
+        time_grain: "WEEK"
+    expected_time_range:
+      type: "LAST_N"
+      value: 1
+      unit: "MONTH"
+    last_verified: "2025-12-14"
+    description: "趋势查询带周环比对比模式"
+
+  - id: REG_011
+    question: "统计每个销售人员的订单数量和总金额"
+    expected_intent: "AGG"
+    expected_metrics: ["METRIC_ORDER_COUNT", "METRIC_GMV"]
+    expected_dimensions: ["DIM_SALES_PERSON"]
+    last_verified: "2025-12-14"
+    description: "多指标多维度聚合查询"
+
+  - id: REG_012
+    question: "查询2024年第一季度的月度收入趋势"
+    expected_intent: "TREND"
+    expected_metrics: ["METRIC_REVENUE"]
+    expected_dimensions:
+      - id: "DIM_DATE"
+        time_grain: "MONTH"
+    expected_time_range:
+      type: "ABSOLUTE"
+      start: "2024-01-01T00:00:00Z"
+      end: "2024-03-31T23:59:59Z"
+    last_verified: "2025-12-14"
+    description: "季度时间范围的月度趋势"

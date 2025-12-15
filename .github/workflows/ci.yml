@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: ["main"]
   workflow_dispatch:
+  schedule:
+    # 每天 UTC 时间 02:00 运行（北京时间 10:00）
+    - cron: '0 2 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -40,7 +43,8 @@ jobs:
           python -m pip install -U pip wheel
           pip install -r requirements.txt
 
-      - name: Run tests
+      - name: Run fast tests (push/PR)
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         env:
           PYTHONPATH: ${{ github.workspace }}/nl2sql_service
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'fake-key-for-test' }}
@@ -54,4 +58,104 @@ jobs:
           SEMANTICS_YAML_PATH: semantics
           VECTOR_STORE_MODE: memory
         run: |
-          pytest tests/ -v --tb=short -m "not integration"
+          pytest tests/ -m "unit or integration" -v
+
+      - name: Run nightly tests (not slow)
+        if: github.event_name == 'schedule'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/nl2sql_service
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'fake-key-for-test' }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY || 'fake-key-for-test' }}
+          DB_HOST: localhost
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: ""
+          DB_NAME: test_db
+          DB_TYPE: mysql
+          SEMANTICS_YAML_PATH: semantics
+          VECTOR_STORE_MODE: memory
+        run: |
+          pytest tests/ -m "not slow" -v
+
+      - name: Run full tests (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/nl2sql_service
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'fake-key-for-test' }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY || 'fake-key-for-test' }}
+          DB_HOST: localhost
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: ""
+          DB_NAME: test_db
+          DB_TYPE: mysql
+          SEMANTICS_YAML_PATH: semantics
+          VECTOR_STORE_MODE: memory
+        run: |
+          pytest tests/ -v
+
+  postman-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # 仅在 nightly 或手动触发时运行
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '18'
+
+      - name: Install Newman
+        run: npm install -g newman
+
+      - name: Start service
+        working-directory: nl2sql_service
+        env:
+          PYTHONPATH: ${{ github.workspace }}/nl2sql_service
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'fake-key-for-test' }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY || 'fake-key-for-test' }}
+          DB_HOST: localhost
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: ""
+          DB_NAME: test_db
+          DB_TYPE: mysql
+          SEMANTICS_YAML_PATH: semantics
+          VECTOR_STORE_MODE: memory
+        run: |
+          # 启动服务
+          python -m uvicorn main:app --host 0.0.0.0 --port 8000 &
+          # 等待服务启动
+          sleep 5
+          # 健康检查
+          for i in {1..30}; do
+            if curl -f http://localhost:8000/health; then
+              echo "Service is ready"
+              break
+            fi
+            echo "Waiting for service... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run Postman Tests
+        env:
+          BASE_URL: http://localhost:8000
+        run: |
+          newman run postman/NL2SQL_Plan_Collection.json \
+            -e postman/environments/local.example.json \
+            --env-var "base_url=${BASE_URL}" \
+            --reporters cli,junit \
+            --reporter-junit-export results/newman-results.xml \
+            --folder "01_Smoke Tests"
+        continue-on-error: true
+
+      - name: Upload Newman Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newman-results
+          path: results/newman-results.xml

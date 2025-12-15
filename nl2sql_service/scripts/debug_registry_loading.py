@@ -16,8 +16,8 @@ import yaml
 # ============================================================
 # 环境准备：添加项目根目录到 Python 路径
 # ============================================================
-# 获取 nl2sql_service 目录（脚本所在目录的父目录）
-nl2sql_service_dir = Path(__file__).parent.parent
+# 获取 nl2sql_service 目录（脚本在 scripts/ 目录下，parent 是 nl2sql_service）
+nl2sql_service_dir = Path(__file__).parent
 sys.path.insert(0, str(nl2sql_service_dir))
 
 # 现在可以导入项目模块

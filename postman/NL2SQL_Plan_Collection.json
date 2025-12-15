@@ -1,0 +1,585 @@
+{
+	"info": {
+		"_postman_id": "nl2sql-plan-collection",
+		"name": "NL2SQL Plan Tests",
+		"description": "NL2SQL服务测试集合，包含冒烟测试、反向测试和边界测试",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "01_Smoke Tests",
+			"item": [
+				{
+					"name": "01_Aggregation Query",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response has intent field\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('intent');",
+									"    pm.expect(jsonData.intent).to.be.oneOf(['AGG', 'TREND', 'DETAIL']);",
+									"});",
+									"",
+									"pm.test(\"Response matches QueryPlan schema\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('intent');",
+									"    pm.expect(jsonData).to.have.property('metrics');",
+									"    pm.expect(jsonData).to.have.property('dimensions');",
+									"    pm.expect(jsonData).to.have.property('filters');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"统计每个部门的员工数量\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "02_Trend Query",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response has intent TREND\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.intent).to.equal('TREND');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"查询最近7天的销售额趋势\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "03_Detail Query",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response has intent DETAIL\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.intent).to.equal('DETAIL');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"显示所有订单明细\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "04_Query with Filters",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response has filters\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('filters');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"查询2024年1月的订单\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "05_Multi-metric Query",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response has multiple metrics\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.metrics.length).to.be.at.least(1);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"统计各部门的销售额和利润\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "02_Negative Tests",
+			"item": [
+				{
+					"name": "01_Missing Required Field",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 422\", function () {",
+									"    pm.response.to.have.status(422);",
+									"});",
+									"",
+									"pm.test(\"Error contract: has detail field\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('detail');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"测试\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "02_Invalid Type",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 422\", function () {",
+									"    pm.response.to.have.status(422);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"测试\",\n    \"user_id\": 123,\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "03_Overlong Text",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400 or 422\", function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([400, 422]);",
+									"});",
+									"",
+									"pm.test(\"No 500 error\", function () {",
+									"    pm.expect(pm.response.code).to.not.equal(500);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"" + "A".repeat(5000) + "\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "04_Ambiguous Terms",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 or 400\", function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 400]);",
+									"});",
+									"",
+									"pm.test(\"No 500 error\", function () {",
+									"    pm.expect(pm.response.code).to.not.equal(500);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"查询外星人数量\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "05_Invalid Time Range",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 or 400\", function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 400]);",
+									"});",
+									"",
+									"pm.test(\"No 500 error\", function () {",
+									"    pm.expect(pm.response.code).to.not.equal(500);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"查询昨天到明天的数据\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "06_Unauthorized Role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 or 403\", function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 403]);",
+									"});",
+									"",
+									"pm.test(\"No 500 error\", function () {",
+									"    pm.expect(pm.response.code).to.not.equal(500);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"统计员工数量\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"ROLE_INVALID\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "07_SQL Injection Attempt",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200 or 400\", function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 400]);",
+									"});",
+									"",
+									"pm.test(\"No 500 error\", function () {",
+									"    pm.expect(pm.response.code).to.not.equal(500);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"查询'; DROP TABLE users; --\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				},
+				{
+					"name": "08_Empty Question",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 422\", function () {",
+									"    pm.response.to.have.status(422);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_path_plan}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"{{api_path_plan}}"
+							]
+						}
+					}
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "api_path_plan",
+			"value": "/nl2sql/plan",
+			"type": "string"
+		}
+	]
+}

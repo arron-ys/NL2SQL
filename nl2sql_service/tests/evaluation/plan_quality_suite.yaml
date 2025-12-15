@@ -1,0 +1,197 @@
+# Plan质量评测集
+# 用于评估Plan的正确性、稳定性、可解释性
+# 交付PM用于验收
+
+evaluation_cases:
+  - category: "聚合查询"
+    cases:
+      - id: EVAL_AGG_001
+        question: "统计每个部门的员工数量"
+        expected:
+          intent: "AGG"
+          metrics: ["METRIC_EMPLOYEE_COUNT"]
+          dimensions: ["DIM_DEPARTMENT"]
+        description: "基础聚合查询"
+
+      - id: EVAL_AGG_002
+        question: "统计各部门的销售额和利润"
+        expected:
+          intent: "AGG"
+          metrics: ["METRIC_REVENUE", "METRIC_PROFIT"]
+          dimensions: ["DIM_DEPARTMENT"]
+        description: "多指标聚合查询"
+
+      - id: EVAL_AGG_003
+        question: "统计每个地区的GMV，按GMV降序排列"
+        expected:
+          intent: "AGG"
+          metrics: ["METRIC_GMV"]
+          dimensions: ["DIM_REGION"]
+          order_by:
+            - id: "METRIC_GMV"
+              direction: "DESC"
+        description: "聚合查询带排序"
+
+  - category: "趋势查询"
+    cases:
+      - id: EVAL_TREND_001
+        question: "查询最近7天的销售额趋势"
+        expected:
+          intent: "TREND"
+          metrics: ["METRIC_REVENUE"]
+          time_range:
+            type: "LAST_N"
+            value: 7
+            unit: "DAY"
+        description: "基础趋势查询"
+
+      - id: EVAL_TREND_002
+        question: "查询最近30天的每日销售额趋势"
+        expected:
+          intent: "TREND"
+          metrics: ["METRIC_REVENUE"]
+          dimensions:
+            - id: "DIM_DATE"
+              time_grain: "DAY"
+          time_range:
+            type: "LAST_N"
+            value: 30
+            unit: "DAY"
+        description: "趋势查询带时间粒度"
+
+      - id: EVAL_TREND_003
+        question: "查询最近一个月的周销售额对比"
+        expected:
+          intent: "TREND"
+          metrics:
+            - id: "METRIC_REVENUE"
+              compare_mode: "WOW"
+          dimensions:
+            - id: "DIM_DATE"
+              time_grain: "WEEK"
+          time_range:
+            type: "LAST_N"
+            value: 1
+            unit: "MONTH"
+        description: "趋势查询带对比模式"
+
+  - category: "明细查询"
+    cases:
+      - id: EVAL_DETAIL_001
+        question: "显示所有订单明细"
+        expected:
+          intent: "DETAIL"
+          metrics: []
+          dimensions: []
+        description: "基础明细查询"
+
+      - id: EVAL_DETAIL_002
+        question: "查询北京的订单，按金额降序排列，限制前10条"
+        expected:
+          intent: "DETAIL"
+          filters:
+            - id: "DIM_CITY"
+              op: "EQ"
+              values: ["北京"]
+          order_by:
+            - id: "METRIC_AMOUNT"
+              direction: "DESC"
+          limit: 10
+        description: "明细查询带过滤、排序和限制"
+
+  - category: "时间范围查询"
+    cases:
+      - id: EVAL_TIME_001
+        question: "查询2024年1月的订单数量"
+        expected:
+          intent: "AGG"
+          metrics: ["METRIC_ORDER_COUNT"]
+          time_range:
+            type: "ABSOLUTE"
+            start: "2024-01-01T00:00:00Z"
+            end: "2024-01-31T23:59:59Z"
+        description: "绝对时间范围查询"
+
+      - id: EVAL_TIME_002
+        question: "查询最近30天的数据"
+        expected:
+          time_range:
+            type: "LAST_N"
+            value: 30
+            unit: "DAY"
+        description: "相对时间范围查询"
+
+  - category: "过滤查询"
+    cases:
+      - id: EVAL_FILTER_001
+        question: "查询北京的订单"
+        expected:
+          filters:
+            - id: "DIM_CITY"
+              op: "EQ"
+              values: ["北京"]
+        description: "等值过滤"
+
+      - id: EVAL_FILTER_002
+        question: "统计销售额大于10000的部门"
+        expected:
+          intent: "AGG"
+          metrics: ["METRIC_REVENUE"]
+          dimensions: ["DIM_DEPARTMENT"]
+          filters:
+            - id: "METRIC_REVENUE"
+              op: "GT"
+              values: [10000]
+        description: "指标过滤"
+
+  - category: "复杂查询"
+    cases:
+      - id: EVAL_COMPLEX_001
+        question: "统计每个产品类别的销售额，只显示销售额大于10000的类别，按销售额降序排列"
+        expected:
+          intent: "AGG"
+          metrics: ["METRIC_REVENUE"]
+          dimensions: ["DIM_PRODUCT_CATEGORY"]
+          filters:
+            - id: "METRIC_REVENUE"
+              op: "GT"
+              values: [10000]
+          order_by:
+            - id: "METRIC_REVENUE"
+              direction: "DESC"
+        description: "复杂聚合查询：过滤+排序"
+
+      - id: EVAL_COMPLEX_002
+        question: "查询2024年第一季度的月度收入趋势，按月份升序"
+        expected:
+          intent: "TREND"
+          metrics: ["METRIC_REVENUE"]
+          dimensions:
+            - id: "DIM_DATE"
+              time_grain: "MONTH"
+          time_range:
+            type: "ABSOLUTE"
+            start: "2024-01-01T00:00:00Z"
+            end: "2024-03-31T23:59:59Z"
+          order_by:
+            - id: "DIM_DATE"
+              direction: "ASC"
+        description: "复杂趋势查询：绝对时间范围+时间粒度+排序"
+
+# 评测指标
+evaluation_metrics:
+  - name: "正确率"
+    description: "Plan意图识别正确率 > 85%"
+    threshold: 0.85
+
+  - name: "稳定性"
+    description: "相同问题3次调用，Plan结构一致性 > 90%"
+    threshold: 0.90
+
+  - name: "可解释性"
+    description: "Plan中metrics/dimensions与问题语义匹配度"
+    threshold: 0.80
+
+  - name: "覆盖率"
+    description: "覆盖YAML中定义的80%以上术语"
+    threshold: 0.80
