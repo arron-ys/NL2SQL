@@ -155,20 +155,53 @@ class TestStructuralSanity:
     async def test_initializes_empty_fields(
         self, mock_registry, mock_context
     ):
-        """测试初始化空字段"""
-        plan = QueryPlan(
+        """测试初始化空字段：验证模型能自动将 None 转换为空列表"""
+        # 测试场景1：显式传入 None
+        plan_with_none = QueryPlan(
             intent=PlanIntent.AGG,
             metrics=[MetricItem(id="METRIC_GMV")],
+            filters=None,  # 显式传入 None
+            order_by=None,  # 显式传入 None
+            warnings=None,  # 显式传入 None
         )
-        # 确保某些字段为None（通过model_dump后修改）
-        plan_dict = plan.model_dump()
-        plan_dict["filters"] = None
-        plan_dict["order_by"] = None
-        plan_dict["warnings"] = None
-        plan = QueryPlan(**plan_dict)
-
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
-
+        
+        # 验证模型自动将 None 转换为空列表
+        assert plan_with_none.filters == []
+        assert plan_with_none.order_by == []
+        assert plan_with_none.warnings == []
+        assert plan_with_none.filters is not None
+        assert plan_with_none.order_by is not None
+        assert plan_with_none.warnings is not None
+        
+        # 测试场景2：不传字段（使用默认值）
+        plan_without_fields = QueryPlan(
+            intent=PlanIntent.AGG,
+            metrics=[MetricItem(id="METRIC_GMV")],
+            # 不传 filters, order_by, warnings，使用默认值
+        )
+        
+        # 验证默认值为空列表
+        assert plan_without_fields.filters == []
+        assert plan_without_fields.order_by == []
+        assert plan_without_fields.warnings == []
+        
+        # 测试场景3：通过 model_validate 从字典创建（模拟前端传入 null）
+        plan_dict = {
+            "intent": "AGG",
+            "metrics": [{"id": "METRIC_GMV"}],
+            "filters": None,  # 前端可能传入 null
+            "order_by": None,  # 前端可能传入 null
+            "warnings": None,  # 前端可能传入 null
+        }
+        plan_from_dict = QueryPlan.model_validate(plan_dict)
+        
+        # 验证模型自动将 None 转换为空列表
+        assert plan_from_dict.filters == []
+        assert plan_from_dict.order_by == []
+        assert plan_from_dict.warnings == []
+        
+        # 验证通过 validate_and_normalize_plan 后仍然正确
+        result = await validate_and_normalize_plan(plan_with_none, mock_context, mock_registry)
         assert result.filters == []
         assert result.order_by == []
         assert result.warnings == []
@@ -198,7 +231,8 @@ class TestSecurityEnforcement:
         with pytest.raises(PermissionDeniedError) as exc_info:
             await validate_and_normalize_plan(plan, mock_context, mock_registry)
 
-        assert "unauthorized IDs" in str(exc_info.value).lower()
+        error_msg = str(exc_info.value).lower()
+        assert "unauthorized" in error_msg and "ids" in error_msg
         assert "METRIC_REVENUE" in str(exc_info.value)
 
     @pytest.mark.asyncio
@@ -221,7 +255,8 @@ class TestSecurityEnforcement:
         with pytest.raises(PermissionDeniedError) as exc_info:
             await validate_and_normalize_plan(plan, mock_context, mock_registry)
 
-        assert "unauthorized IDs" in str(exc_info.value).lower()
+        error_msg = str(exc_info.value).lower()
+        assert "unauthorized" in error_msg and "ids" in error_msg
         assert "DIM_COUNTRY" in str(exc_info.value)
 
     @pytest.mark.asyncio
@@ -245,7 +280,8 @@ class TestSecurityEnforcement:
         with pytest.raises(PermissionDeniedError) as exc_info:
             await validate_and_normalize_plan(plan, mock_context, mock_registry)
 
-        assert "unauthorized IDs" in str(exc_info.value).lower()
+        error_msg = str(exc_info.value).lower()
+        assert "unauthorized" in error_msg and "ids" in error_msg
 
     @pytest.mark.asyncio
     async def test_all_authorized_ids_pass(

@@ -1,0 +1,31 @@
+# NL2SQL Project AI Behavior Rules
+
+You are the QA Architect for the NL2SQL project. You must adhere to the following testing architecture.
+
+## 1. Testing Strategy (The Iron Triangle)
+*   **Mock First**: Unless explicitly asked for "Live" or "Real" tests, ALWAYS generate tests using `unittest.mock`, `AsyncMock`, or `respx`.
+*   **Isolation**: Unit/Integration tests must run in memory (milliseconds). NEVER make real network calls.
+*   **Live Separation**: Real external calls (OpenAI, Jina, DB) belong ONLY in `tests/live/`.
+
+## 2. File Placement
+*   **Unit/Integration**: `nl2sql_service/tests/test_<module>.py`
+*   **Live/E2E**: `nl2sql_service/tests/live/test_<feature>_live.py`
+*   **Internal Perf**: `nl2sql_service/tests/test_performance_internal.py`
+
+## 3. Configuration & Registration (CRITICAL)
+*   **Update Conftest**: Whenever you create a new test file, you **MUST** check `nl2sql_service/tests/conftest.py` and remind the user to update `path_marker_map` if necessary.
+*   **Check Markers**: Read `pytest.ini` to identify valid markers. Do NOT invent new markers.
+    *   Ensure every test file has at least one **Layer Marker** (e.g., `unit`, `integration`, `e2e`...).
+
+## 4. Live Test Requirements
+When writing tests in `tests/live/`:
+1.  **Markers**: Must include `@pytest.mark.live` AND `@pytest.mark.slow`.
+2.  **Safety**: You MUST add a `skipif` decorator that checks if the API Key is missing or is a placeholder (e.g., "fake-key"). Use the helper function found in `tests/live/helpers.py`.
+
+## 5. Performance Test Standards
+*   **Internal (Mock)**: Threshold P95 must be **< 200ms**.
+*   **Live (Real)**: Thresholds can be in seconds.
+
+## 6. Execution & Dependencies
+*   **Run Tests**: Prefer using the PowerShell scripts in `nl2sql_service/scripts/` (e.g., `test_fast.ps1`, `test_live.ps1`). Adjust the path based on the current working directory.
+*   **New Libraries**: If you import a new package, explicitly ask the user to add it to `nl2sql_service/requirements.txt`.

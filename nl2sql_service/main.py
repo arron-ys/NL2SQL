@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -167,6 +168,7 @@ class QueryRequest(BaseModel):
     
     include_trace: bool = Field(
         default=False,
+        strict=True,  # 严格模式：不允许字符串自动转换为布尔值
         description="是否包含调试信息（中间产物）"
     )
 
@@ -257,6 +259,19 @@ class DebugResponse(BaseModel):
 # ============================================================
 # 全局异常处理器
 # ============================================================
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    处理请求验证错误（422）
+    
+    FastAPI 默认会处理 Pydantic 验证错误，但我们需要确保返回正确的状态码。
+    """
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": exc.errors()}
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
@@ -559,6 +574,9 @@ async def generate_plan(
         
         return validated_plan
     
+    except RequestValidationError:
+        # 让 RequestValidationError 自然传播，由异常处理器处理
+        raise
     except Exception as e:
         logger.error(
             "Plan generation failed",

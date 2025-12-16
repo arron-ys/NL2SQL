@@ -472,14 +472,13 @@ class TestQueryPlan:
         plan = QueryPlan(intent=PlanIntent.AGG)
         # 测试 warnings 中的字符串会被去除空格
         plan.warnings.append("  warning with spaces  ")
-        # 注意：Pydantic 的 str_strip_whitespace 只在模型创建时生效
+        # 注意：Pydantic 的 str_strip_whitespace=True 会在模型创建时自动去除字符串首尾空格
         # 这里我们测试通过 model_validate 创建
         plan_dict = plan.model_dump()
         plan_dict["warnings"] = ["  warning with spaces  "]
         new_plan = QueryPlan.model_validate(plan_dict)
-        # 由于 str_strip_whitespace 配置，空格应该被保留在列表中
-        # 但字段值本身会被处理
-        assert new_plan.warnings == ["  warning with spaces  "]
+        # 由于 str_strip_whitespace=True 配置，字符串首尾空格会被自动去除
+        assert new_plan.warnings == ["warning with spaces"]
 
     def test_complete_plan(self):
         """测试完整的计划（包含所有字段）"""

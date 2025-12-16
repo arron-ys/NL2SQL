@@ -8,14 +8,17 @@ Plan API Test Suite
 - Error Contract 验证
 - Plan 响应 Contract Test（Schema 验证）
 """
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from main import app
-from schemas.plan import MetricItem, PlanIntent, QueryPlan
+from schemas.plan import DimensionItem, MetricItem, PlanIntent, QueryPlan
 from schemas.request import RequestContext, SubQueryItem
+from stages.stage2_plan_generation import Stage2Error
+from stages.stage3_validation import MissingMetricError, PermissionDeniedError
 
 
 # ============================================================
@@ -86,68 +89,179 @@ class TestPlanAPISuccess:
     """测试 Plan API 成功场景"""
 
     @pytest.mark.asyncio
-    @patch("main.registry")
     @patch("stages.stage1_decomposition.process_request")
     @patch("stages.stage2_plan_generation.process_subquery")
     @patch("stages.stage3_validation.validate_and_normalize_plan")
-    async def test_plan_api_success(
+    async def test_plan_api_success_agg(
         self,
         mock_validate,
         mock_generate_plan,
         mock_decomposition,
-        mock_registry_global,
         client,
         mock_registry,
-        mock_ai_client,
     ):
-        """测试正常 Plan 生成"""
+        """测试正常 Plan 生成 - AGG Intent"""
         # 设置全局 registry
-        mock_registry_global = mock_registry
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            # Mock Stage 1: Query Decomposition
+            mock_decomposition.return_value = MagicMock(
+                request_context=RequestContext(
+                    user_id="user_001",
+                    role_id="ROLE_HR_HEAD",
+                    tenant_id="tenant_001",
+                    request_id="test_request_001",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[
+                    SubQueryItem(id="sq_1", description="统计员工数量"),
+                ],
+            )
 
-        # Mock Stage 1: Query Decomposition
-        from datetime import date
+            # Mock Stage 2: Plan Generation
+            mock_generate_plan.return_value = QueryPlan(
+                intent=PlanIntent.AGG,
+                metrics=[MetricItem(id="METRIC_GMV")],
+            )
 
-        mock_decomposition.return_value = MagicMock(
-            request_context=RequestContext(
-                user_id="user_001",
-                role_id="ROLE_HR_HEAD",
-                tenant_id="tenant_001",
-                request_id="test_request_001",
-                current_date=date(2024, 1, 15),
-            ),
-            sub_queries=[
-                SubQueryItem(id="sq_1", description="统计员工数量"),
-            ],
-        )
+            # Mock Stage 3: Validation
+            mock_validate.return_value = QueryPlan(
+                intent=PlanIntent.AGG,
+                metrics=[MetricItem(id="METRIC_GMV")],
+            )
 
-        # Mock Stage 2: Plan Generation
-        mock_generate_plan.return_value = QueryPlan(
-            intent=PlanIntent.AGG,
-            metrics=[MetricItem(id="METRIC_GMV")],
-        )
+            # 发送请求
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "统计员工数量",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
 
-        # Mock Stage 3: Validation
-        mock_validate.return_value = QueryPlan(
-            intent=PlanIntent.AGG,
-            metrics=[MetricItem(id="METRIC_GMV")],
-        )
+            # 验证响应
+            assert response.status_code == 200
+            plan = response.json()
+            assert "intent" in plan
+            assert plan["intent"] == "AGG"
+            assert "metrics" in plan
+            assert len(plan["metrics"]) > 0
 
-        # 发送请求
-        response = client.post(
-            "/nl2sql/plan",
-            json={
-                "question": "统计员工数量",
-                "user_id": "user_001",
-                "role_id": "ROLE_HR_HEAD",
-                "tenant_id": "tenant_001",
-            },
-        )
+    @pytest.mark.asyncio
+    @patch("stages.stage1_decomposition.process_request")
+    @patch("stages.stage2_plan_generation.process_subquery")
+    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    async def test_plan_api_success_trend(
+        self,
+        mock_validate,
+        mock_generate_plan,
+        mock_decomposition,
+        client,
+        mock_registry,
+    ):
+        """测试正常 Plan 生成 - TREND Intent"""
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            mock_decomposition.return_value = MagicMock(
+                request_context=RequestContext(
+                    user_id="user_001",
+                    role_id="ROLE_HR_HEAD",
+                    tenant_id="tenant_001",
+                    request_id="test_request_002",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[
+                    SubQueryItem(id="sq_1", description="查看销售额趋势"),
+                ],
+            )
 
-        # 验证响应
-        assert response.status_code == 200
-        plan = response.json()
-        assert "intent" in plan
-        assert plan["intent"] in ["AGG", "TREND", "DETAIL"]
+            # Mock TREND intent plan
+            mock_generate_plan.return_value = QueryPlan(
+                intent=PlanIntent.TREND,
+                metrics=[MetricItem(id="METRIC_GMV")],
+                dimensions=[DimensionItem(id="DIM_REGION")],
+                time_range={"type": "LAST_N", "value": 30, "unit": "DAY"},
+            )
+
+            mock_validate.return_value = QueryPlan(
+                intent=PlanIntent.TREND,
+                metrics=[MetricItem(id="METRIC_GMV")],
+                dimensions=[DimensionItem(id="DIM_REGION")],
+                time_range={"type": "LAST_N", "value": 30, "unit": "DAY"},
+            )
+
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "查看销售额趋势",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
+
+            assert response.status_code == 200
+            plan = response.json()
+            assert plan["intent"] == "TREND"
+            assert "time_range" in plan
+
+    @pytest.mark.asyncio
+    @patch("stages.stage1_decomposition.process_request")
+    @patch("stages.stage2_plan_generation.process_subquery")
+    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    async def test_plan_api_success_detail(
+        self,
+        mock_validate,
+        mock_generate_plan,
+        mock_decomposition,
+        client,
+        mock_registry,
+    ):
+        """测试正常 Plan 生成 - DETAIL Intent"""
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            mock_decomposition.return_value = MagicMock(
+                request_context=RequestContext(
+                    user_id="user_001",
+                    role_id="ROLE_HR_HEAD",
+                    tenant_id="tenant_001",
+                    request_id="test_request_003",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[
+                    SubQueryItem(id="sq_1", description="查看订单明细"),
+                ],
+            )
+
+            # Mock DETAIL intent plan
+            mock_generate_plan.return_value = QueryPlan(
+                intent=PlanIntent.DETAIL,
+                dimensions=[DimensionItem(id="DIM_REGION"), DimensionItem(id="DIM_DEPARTMENT")],
+                limit=100,
+            )
+
+            mock_validate.return_value = QueryPlan(
+                intent=PlanIntent.DETAIL,
+                dimensions=[DimensionItem(id="DIM_REGION"), DimensionItem(id="DIM_DEPARTMENT")],
+                limit=100,
+            )
+
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "查看订单明细",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
+
+            assert response.status_code == 200
+            plan = response.json()
+            assert plan["intent"] == "DETAIL"
+            assert "limit" in plan
 
     @pytest.mark.asyncio
     @patch("main.registry")
@@ -323,18 +437,186 @@ class TestErrorContract:
         # 验证响应头包含 X-Trace-ID 或 X-Request-ID
         assert "X-Trace-ID" in response.headers or "X-Request-ID" in response.headers
 
-    def test_error_contract_400_status(self, client):
-        """测试 400 错误的结构"""
-        # 这个测试需要模拟 Stage 1 返回空子查询的情况
-        # 由于需要完整的 mock，这里先跳过具体实现
-        # 实际测试中应该验证 400 错误的结构
-        pass
+    @pytest.mark.asyncio
+    @patch("main.stage1_decomposition.process_request")
+    async def test_error_contract_400_status(
+        self, mock_decomposition, client, mock_registry
+    ):
+        """测试 400 错误的结构（空子查询）"""
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            # Mock Stage 1 返回空子查询
+            mock_decomposition.return_value = MagicMock(
+                request_context=RequestContext(
+                    user_id="user_001",
+                    role_id="ROLE_HR_HEAD",
+                    tenant_id="tenant_001",
+                    request_id="test_request_400",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[],  # 空子查询列表
+            )
 
-    def test_error_contract_500_status(self, client):
-        """测试 500 错误的结构"""
-        # 这个测试需要模拟内部错误
-        # 实际测试中应该验证 500 错误的结构包含 detail 和 request_id
-        pass
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "无效问题",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
+
+            assert response.status_code == 400
+            error = response.json()
+            assert "detail" in error
+            assert "No sub-queries" in error["detail"]
+
+    @pytest.mark.asyncio
+    @patch("stages.stage1_decomposition.process_request")
+    @patch("stages.stage2_plan_generation.process_subquery")
+    async def test_error_contract_500_status_stage2_error(
+        self,
+        mock_generate_plan,
+        mock_decomposition,
+        client,
+        mock_registry,
+    ):
+        """测试 500 错误的结构（Stage 2 错误）"""
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            mock_decomposition.return_value = MagicMock(
+                request_context=RequestContext(
+                    user_id="user_001",
+                    role_id="ROLE_HR_HEAD",
+                    tenant_id="tenant_001",
+                    request_id="test_request_500",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[
+                    SubQueryItem(id="sq_1", description="测试问题"),
+                ],
+            )
+
+            # Mock Stage 2 抛出异常
+            mock_generate_plan.side_effect = Stage2Error("Failed to generate plan")
+
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "测试问题",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
+
+            assert response.status_code == 500
+            error = response.json()
+            assert "detail" in error
+            assert "Internal server error" in error["detail"]
+
+    @pytest.mark.asyncio
+    @patch("stages.stage1_decomposition.process_request")
+    @patch("stages.stage2_plan_generation.process_subquery")
+    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    async def test_error_contract_missing_metric_error(
+        self,
+        mock_validate,
+        mock_generate_plan,
+        mock_decomposition,
+        client,
+        mock_registry,
+    ):
+        """测试 MissingMetricError 转换为 500 错误"""
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            mock_decomposition.return_value = MagicMock(
+                request_context=RequestContext(
+                    user_id="user_001",
+                    role_id="ROLE_HR_HEAD",
+                    tenant_id="tenant_001",
+                    request_id="test_request_missing_metric",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[
+                    SubQueryItem(id="sq_1", description="测试问题"),
+                ],
+            )
+
+            mock_generate_plan.return_value = QueryPlan(
+                intent=PlanIntent.AGG,
+                metrics=[],  # 空指标列表
+            )
+
+            # Mock Stage 3 抛出 MissingMetricError
+            mock_validate.side_effect = MissingMetricError("Plan with intent AGG must have at least one metric")
+
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "测试问题",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
+
+            assert response.status_code == 500
+            error = response.json()
+            assert "detail" in error
+            assert "Internal server error" in error["detail"]
+
+    @pytest.mark.asyncio
+    @patch("stages.stage1_decomposition.process_request")
+    @patch("stages.stage2_plan_generation.process_subquery")
+    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    async def test_error_contract_permission_denied_error(
+        self,
+        mock_validate,
+        mock_generate_plan,
+        mock_decomposition,
+        client,
+        mock_registry,
+    ):
+        """测试 PermissionDeniedError 转换为 500 错误"""
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            mock_decomposition.return_value = MagicMock(
+                request_context=RequestContext(
+                    user_id="user_001",
+                    role_id="ROLE_HR_HEAD",
+                    tenant_id="tenant_001",
+                    request_id="test_request_permission",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[
+                    SubQueryItem(id="sq_1", description="测试问题"),
+                ],
+            )
+
+            mock_generate_plan.return_value = QueryPlan(
+                intent=PlanIntent.AGG,
+                metrics=[MetricItem(id="METRIC_GMV")],
+            )
+
+            # Mock Stage 3 抛出 PermissionDeniedError
+            mock_validate.side_effect = PermissionDeniedError("User does not have permission to access METRIC_GMV")
+
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "测试问题",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
+
+            assert response.status_code == 500
+            error = response.json()
+            assert "detail" in error
+            assert "Internal server error" in error["detail"]
 
 
 # ============================================================
@@ -376,14 +658,115 @@ class TestPlanResponseContract:
             except Exception as e:
                 pytest.fail(f"Plan response validation failed: {e}")
 
-    def test_plan_response_has_required_fields(self, client):
+    @pytest.mark.asyncio
+    @patch("stages.stage1_decomposition.process_request")
+    @patch("stages.stage2_plan_generation.process_subquery")
+    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    async def test_plan_response_has_required_fields(
+        self,
+        mock_validate,
+        mock_generate_plan,
+        mock_decomposition,
+        client,
+        mock_registry,
+    ):
         """测试 Plan 响应包含必需字段"""
-        # 这个测试需要成功的响应
-        # 实际测试中应该验证响应包含所有必需字段
-        pass
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            mock_decomposition.return_value = MagicMock(
+                request_context=RequestContext(
+                    user_id="user_001",
+                    role_id="ROLE_HR_HEAD",
+                    tenant_id="tenant_001",
+                    request_id="test_request_fields",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[
+                    SubQueryItem(id="sq_1", description="测试问题"),
+                ],
+            )
 
-    def test_plan_response_intent_enum(self, client):
+            mock_generate_plan.return_value = QueryPlan(
+                intent=PlanIntent.AGG,
+                metrics=[MetricItem(id="METRIC_GMV")],
+                dimensions=[DimensionItem(id="DIM_REGION")],
+                filters=[],
+                order_by=[],
+                warnings=[],
+            )
+
+            mock_validate.return_value = QueryPlan(
+                intent=PlanIntent.AGG,
+                metrics=[MetricItem(id="METRIC_GMV")],
+                dimensions=[DimensionItem(id="DIM_REGION")],
+                filters=[],
+                order_by=[],
+                warnings=[],
+            )
+
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "测试问题",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
+
+            assert response.status_code == 200
+            plan = response.json()
+            # 验证必需字段
+            assert "intent" in plan
+            assert "metrics" in plan
+            assert "dimensions" in plan
+            assert "filters" in plan
+            assert "order_by" in plan
+            assert "warnings" in plan
+
+    @pytest.mark.asyncio
+    @patch("stages.stage1_decomposition.process_request")
+    @patch("stages.stage2_plan_generation.process_subquery")
+    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    async def test_plan_response_intent_enum(
+        self,
+        mock_validate,
+        mock_generate_plan,
+        mock_decomposition,
+        client,
+        mock_registry,
+    ):
         """测试 Plan 响应的 intent 必须是有效枚举值"""
-        # 这个测试需要成功的响应
-        # 实际测试中应该验证 intent 是 AGG/TREND/DETAIL 之一
-        pass
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            mock_decomposition.return_value = MagicMock(
+                request_context=RequestContext(
+                    user_id="user_001",
+                    role_id="ROLE_HR_HEAD",
+                    tenant_id="tenant_001",
+                    request_id="test_request_enum",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[
+                    SubQueryItem(id="sq_1", description="测试问题"),
+                ],
+            )
+
+            # 测试所有三种 intent
+            for intent in [PlanIntent.AGG, PlanIntent.TREND, PlanIntent.DETAIL]:
+                mock_generate_plan.return_value = QueryPlan(intent=intent, metrics=[])
+                mock_validate.return_value = QueryPlan(intent=intent, metrics=[])
+
+                response = client.post(
+                    "/nl2sql/plan",
+                    json={
+                        "question": "测试问题",
+                        "user_id": "user_001",
+                        "role_id": "ROLE_HR_HEAD",
+                        "tenant_id": "tenant_001",
+                    },
+                )
+
+                assert response.status_code == 200
+                plan = response.json()
+                assert plan["intent"] in ["AGG", "TREND", "DETAIL"]

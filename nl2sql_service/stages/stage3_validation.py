@@ -242,10 +242,11 @@ async def validate_and_normalize_plan(
     # 检查是否有未授权的 ID
     unauthorized_ids = plan_ids - allowed_ids
     if unauthorized_ids:
+        unauthorized_ids_list = list(unauthorized_ids)
         logger.error(
-            f"Plan contains unauthorized IDs: {unauthorized_ids}",
+            "Plan contains unauthorized IDs",
             extra={
-                "unauthorized_ids": list(unauthorized_ids),
+                "unauthorized_ids": unauthorized_ids_list,
                 "role_id": context.role_id
             }
         )
@@ -268,9 +269,10 @@ async def validate_and_normalize_plan(
                     entity_ids.add(entity_id)
         
         if len(entity_ids) > 1:
+            entity_ids_list = list(entity_ids)
             logger.error(
-                f"Plan contains metrics from multiple entities: {entity_ids}",
-                extra={"entity_ids": list(entity_ids)}
+                "Plan contains metrics from multiple entities",
+                extra={"entity_ids": entity_ids_list}
             )
             raise UnsupportedMultiFactError(
                 f"Plan contains metrics from multiple entities: {entity_ids}. "

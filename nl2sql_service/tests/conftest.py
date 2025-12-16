@@ -4,6 +4,9 @@ Pytest Configuration and Auto-Marking
 根据测试文件路径自动为测试项添加 marker，避免手动标记遗漏。
 强制校验：每个测试项必须至少拥有一个分层 marker。
 """
+import os
+from pathlib import Path
+
 import pytest
 
 
@@ -20,8 +23,9 @@ LAYER_MARKERS = {
     "quality",
 }
 
-# 文件到 marker 的映射（key 使用纯文件名）
-file_marker_map = {
+# 路径到 marker 的映射（key 使用相对 tests 根目录的路径，例如 "test_schemas.py" 或 "live/test_e2e_live.py"）
+path_marker_map = {
+    # 根目录测试文件
     "test_schemas.py": ["unit"],
     "test_validation.py": ["unit"],
     "test_registry.py": ["unit"],
@@ -29,31 +33,83 @@ file_marker_map = {
     "test_logger_and_middleware.py": ["unit"],
     "test_qdrant_init_clients.py": ["unit"],
     "test_plan_api.py": ["integration"],
-    "test_plan_regression.py": ["regression", "integration"],  # 如果已手动标记，不会重复添加
+    "test_plan_regression.py": ["regression", "integration"],
     "test_e2e_pipeline.py": ["e2e"],
     "test_security.py": ["security"],
     "test_stability.py": ["stability"],
     "test_observability.py": ["observability"],
-    "test_performance.py": ["performance", "slow"],
+    "test_performance_internal.py": ["performance"],  # 内部性能测试（Mock 版）
     "test_quality_evaluation.py": ["quality", "slow"],
+    # Live 测试文件（使用完整相对路径避免冲突）
+    "live/test_performance_live.py": ["performance", "slow", "live"],
+    "live/test_e2e_live.py": ["e2e", "slow", "live"],
 }
+
+
+def _get_tests_root_path() -> Path:
+    """
+    获取 tests 根目录的路径
+    
+    通过查找包含 conftest.py 的目录来确定。
+    """
+    # 获取当前 conftest.py 所在目录（即 tests 根目录）
+    current_file = Path(__file__).resolve()
+    return current_file.parent
+
+
+def _get_relative_test_path(item) -> str:
+    """
+    获取测试文件相对于 tests 根目录的路径
+    
+    优先使用 item.path，fallback 到 nodeid 解析。
+    返回格式：例如 "test_schemas.py" 或 "live/test_e2e_live.py"
+    """
+    tests_root = _get_tests_root_path()
+    
+    # 优先使用 item.path（pathlib.Path）
+    if hasattr(item, "path") and item.path:
+        try:
+            item_path = Path(item.path).resolve()
+            # 计算相对于 tests 根目录的路径
+            try:
+                relative_path = item_path.relative_to(tests_root)
+                # 转换为字符串，统一使用正斜杠
+                return str(relative_path).replace("\\", "/")
+            except ValueError:
+                # 如果不在 tests 根目录下，fallback 到 basename
+                return item_path.name
+        except (AttributeError, TypeError):
+            pass
+    
+    # Fallback: 从 nodeid 解析
+    file_path = item.nodeid.split("::")[0]
+    # 统一分隔符
+    file_path = file_path.replace("\\", "/")
+    
+    # 尝试从 nodeid 中提取相对路径
+    # nodeid 可能是 "tests/test_schemas.py" 或 "nl2sql_service/tests/test_schemas.py"
+    parts = file_path.split("/")
+    
+    # 查找 "tests" 目录
+    if "tests" in parts:
+        tests_index = parts.index("tests")
+        # 获取 tests 之后的所有部分
+        relative_parts = parts[tests_index + 1:]
+        if relative_parts:
+            return "/".join(relative_parts)
+    
+    # 如果找不到 tests 目录，返回最后一个部分（basename）
+    return parts[-1] if parts else file_path
 
 
 def _get_file_name(item) -> str:
     """
     获取测试项所属的文件名（basename）
     
-    优先使用 item.path.name，fallback 到 nodeid 解析。
+    用于向后兼容和 fallback。
     """
-    # 优先使用 item.path（pathlib.Path）
-    if hasattr(item, "path") and item.path:
-        return item.path.name
-    
-    # Fallback: 从 nodeid 解析
-    file_path = item.nodeid.split("::")[0]
-    # 统一分隔符后取 basename
-    file_name = file_path.replace("\\", "/").split("/")[-1]
-    return file_name
+    relative_path = _get_relative_test_path(item)
+    return os.path.basename(relative_path)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -61,7 +117,7 @@ def pytest_collection_modifyitems(config, items):
     根据测试文件路径自动添加 marker，并强制校验每个测试项都有分层 marker。
     
     规则：
-    1. 使用文件名（basename）匹配映射表，避免路径前缀问题
+    1. 优先使用相对 tests 根目录的路径匹配映射表，避免路径前缀问题
     2. 如果 item 已经有该 marker，则不要重复添加
     3. 自动打标后，强制校验每个 item 必须至少拥有一个分层 marker
     4. 对于 test_ 开头的文件，如果既不在 map 中又没有任何分层 marker，则报错
@@ -70,15 +126,22 @@ def pytest_collection_modifyitems(config, items):
     unmarked_items = []
     
     for item in items:
-        # 获取文件名
+        # 获取相对路径和文件名
+        relative_path = _get_relative_test_path(item)
         file_name = _get_file_name(item)
         
         # 获取现有 markers
         existing_markers = {m.name for m in item.iter_markers()}
         
+        # 优先使用相对路径匹配，fallback 到文件名匹配
+        markers_to_add = None
+        if relative_path in path_marker_map:
+            markers_to_add = path_marker_map[relative_path]
+        elif file_name in path_marker_map:
+            markers_to_add = path_marker_map[file_name]
+        
         # 如果文件在映射表中，自动添加 marker
-        if file_name in file_marker_map:
-            markers_to_add = file_marker_map[file_name]
+        if markers_to_add:
             for marker_name in markers_to_add:
                 # 避免重复添加
                 if marker_name not in existing_markers:
@@ -98,11 +161,12 @@ def pytest_collection_modifyitems(config, items):
             
             # 判断是否为 test_ 开头的文件
             is_test_file = file_name.startswith("test_") and file_name.endswith(".py")
-            in_map = file_name in file_marker_map
+            in_map = relative_path in path_marker_map or file_name in path_marker_map
             
             unmarked_items.append({
                 "nodeid": item.nodeid,
                 "file_path": item_path,
+                "relative_path": relative_path,
                 "file_name": file_name,
                 "current_markers": current_markers,
                 "is_test_file": is_test_file,
@@ -120,22 +184,23 @@ def pytest_collection_modifyitems(config, items):
         for info in unmarked_items:
             error_lines.append(f"\n  Test: {info['nodeid']}")
             error_lines.append(f"  File: {info['file_path']}")
+            error_lines.append(f"  Relative path: {info['relative_path']}")
             error_lines.append(f"  File name: {info['file_name']}")
             error_lines.append(f"  Current markers: {', '.join(info['current_markers'])}")
             
             # 针对 test_ 开头的文件给出更明确的提示
             if info['is_test_file'] and not info['in_map']:
-                error_lines.append(f"\n  ⚠️  新增测试文件 '{info['file_name']}' 未配置 marker")
+                error_lines.append(f"\n  ⚠️  新增测试文件 '{info['relative_path']}' 未配置 marker")
                 error_lines.append(f"  修复方式（二选一）：")
-                error_lines.append(f"    1) 在 conftest.py 的 file_marker_map 中添加：")
-                error_lines.append(f"       \"{info['file_name']}\": [\"unit\"],  # 或其他分层 marker")
+                error_lines.append(f"    1) 在 conftest.py 的 path_marker_map 中添加：")
+                error_lines.append(f"       \"{info['relative_path']}\": [\"unit\"],  # 或其他分层 marker")
                 error_lines.append(f"    2) 在测试文件中手动添加 marker：")
                 error_lines.append(f"       @pytest.mark.unit  # 或其他分层 marker")
             else:
                 error_lines.append(f"\n  修复方式（二选一）：")
                 error_lines.append(f"    1) 在测试项上添加 @pytest.mark.<layer>")
-                error_lines.append(f"    2) 在 conftest.py 的 file_marker_map 中添加：")
-                error_lines.append(f"       \"{info['file_name']}\": [\"unit\"],  # 或其他分层 marker")
+                error_lines.append(f"    2) 在 conftest.py 的 path_marker_map 中添加：")
+                error_lines.append(f"       \"{info['relative_path']}\": [\"unit\"],  # 或其他分层 marker")
         
         error_lines.append("\n" + "=" * 80)
         error_lines.append(

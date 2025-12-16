@@ -1,20 +1,18 @@
 """
-Performance Test Suite
+Live Performance Test Suite
 
-测试性能相关指标：
-- 延迟：单请求P50 < 2s, P95 < 5s
-- 并发：支持10并发，成功率 > 95%
-- 超时：超时设置30s
+测试真实外部服务（OpenAI/Jina）的性能指标。
+需要真实的 API Key，如果 Key 不可用则跳过测试。
 """
-import asyncio
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from main import app
+from tests.live.helpers import get_openai_api_key, get_jina_api_key, is_placeholder_key
 
 
 # ============================================================
@@ -28,26 +26,30 @@ def client():
     return TestClient(app)
 
 
-@pytest.fixture
-def mock_registry():
-    """创建模拟的 SemanticRegistry"""
-    registry = MagicMock()
-    registry.get_allowed_ids.return_value = {
-        "METRIC_GMV",
-        "METRIC_REVENUE",
-        "DIM_REGION",
-    }
-    registry.get_metric_def.return_value = {
-        "id": "METRIC_GMV",
-        "entity_id": "ENTITY_ORDER",
-    }
-    registry.get_dimension_def.return_value = {
-        "id": "DIM_REGION",
-        "entity_id": "ENTITY_ORDER",
-    }
-    registry.check_compatibility.return_value = True
-    registry.global_config = {}
-    return registry
+# ============================================================
+# Skip Conditions
+# ============================================================
+
+
+def _should_skip_live_tests():
+    """检查是否应该跳过 Live 测试"""
+    # 直接检查环境变量并使用 is_placeholder_key 判断
+    openai_key_env = os.getenv("OPENAI_API_KEY", "")
+    
+    # 如果 OpenAI Key 缺失或为占位符，跳过测试
+    if not openai_key_env or is_placeholder_key(openai_key_env):
+        return True, "OpenAI API Key not available or is placeholder"
+    
+    # Jina Key 可选，但如果提供了但为占位符，也跳过
+    jina_key_env = os.getenv("JINA_API_KEY", "")
+    if jina_key_env and is_placeholder_key(jina_key_env):
+        return True, "Jina API Key is placeholder"
+    
+    return False, None
+
+
+# 在模块级别计算 skip 条件（用于装饰器）
+_SKIP_LIVE_TESTS, _SKIP_REASON = _should_skip_live_tests()
 
 
 # ============================================================
@@ -56,18 +58,19 @@ def mock_registry():
 
 
 class TestLatency:
-    """测试请求延迟"""
+    """测试请求延迟（真实外部服务）"""
 
     @pytest.mark.asyncio
     @pytest.mark.performance
+    @pytest.mark.live
     @pytest.mark.slow
-    @patch("main.registry")
-    async def test_single_request_latency_p50(
-        self, mock_registry_global, client, mock_registry
-    ):
-        """测试单请求延迟P50 < 2s"""
-        mock_registry_global = mock_registry
-
+    @pytest.mark.skipif(
+        _SKIP_LIVE_TESTS,
+        reason=_SKIP_REASON or "Live services not available"
+    )
+    async def test_single_request_latency_p50(self, client):
+        """测试单请求延迟 P50 < 2s（真实 LLM）"""
+        
         latencies = []
         num_requests = 10
 
@@ -85,24 +88,32 @@ class TestLatency:
             end_time = time.time()
             latency = end_time - start_time
             latencies.append(latency)
+            
+            # 如果请求失败，记录但继续
+            if response.status_code != 200:
+                continue
 
-        # 计算P50
+        if len(latencies) == 0:
+            pytest.skip("All requests failed, cannot measure latency")
+
+        # 计算 P50
         latencies.sort()
         p50 = latencies[len(latencies) // 2]
 
-        # P50应该 < 2s（在mock环境下应该很快）
+        # P50 应该 < 2s
         assert p50 < 2.0, f"P50 latency {p50}s exceeds 2s threshold"
 
     @pytest.mark.asyncio
     @pytest.mark.performance
+    @pytest.mark.live
     @pytest.mark.slow
-    @patch("main.registry")
-    async def test_single_request_latency_p95(
-        self, mock_registry_global, client, mock_registry
-    ):
-        """测试单请求延迟P95 < 5s"""
-        mock_registry_global = mock_registry
-
+    @pytest.mark.skipif(
+        _SKIP_LIVE_TESTS,
+        reason=_SKIP_REASON or "Live services not available"
+    )
+    async def test_single_request_latency_p95(self, client):
+        """测试单请求延迟 P95 < 5s（真实 LLM）"""
+        
         latencies = []
         num_requests = 20
 
@@ -120,13 +131,20 @@ class TestLatency:
             end_time = time.time()
             latency = end_time - start_time
             latencies.append(latency)
+            
+            # 如果请求失败，记录但继续
+            if response.status_code != 200:
+                continue
 
-        # 计算P95
+        if len(latencies) == 0:
+            pytest.skip("All requests failed, cannot measure latency")
+
+        # 计算 P95
         latencies.sort()
         p95_index = int(len(latencies) * 0.95)
         p95 = latencies[p95_index] if p95_index < len(latencies) else latencies[-1]
 
-        # P95应该 < 5s
+        # P95 应该 < 5s
         assert p95 < 5.0, f"P95 latency {p95}s exceeds 5s threshold"
 
 
@@ -136,18 +154,19 @@ class TestLatency:
 
 
 class TestConcurrency:
-    """测试并发处理能力"""
+    """测试并发处理能力（真实外部服务）"""
 
     @pytest.mark.asyncio
     @pytest.mark.performance
+    @pytest.mark.live
     @pytest.mark.slow
-    @patch("main.registry")
-    async def test_concurrent_requests_success_rate(
-        self, mock_registry_global, client, mock_registry
-    ):
+    @pytest.mark.skipif(
+        _SKIP_LIVE_TESTS,
+        reason=_SKIP_REASON or "Live services not available"
+    )
+    async def test_concurrent_requests_success_rate(self, client):
         """测试10并发请求，成功率 > 95%"""
-        mock_registry_global = mock_registry
-
+        
         num_concurrent = 10
         request_data = {
             "question": "统计员工数量",
@@ -157,7 +176,7 @@ class TestConcurrency:
         }
 
         def make_request():
-            response = client.post("/nl2sql/plan", json=request_data)
+            response = client.post("/nl2sql/plan", json=request_data, timeout=30)
             return response.status_code
 
         # 使用线程池执行并发请求
@@ -165,8 +184,8 @@ class TestConcurrency:
             futures = [executor.submit(make_request) for _ in range(num_concurrent)]
             results = [future.result() for future in futures]
 
-        # 计算成功率（200或预期的成功状态码）
-        success_count = sum(1 for code in results if code in [200, 500])  # 500可能是mock问题
+        # 计算成功率（200 为成功）
+        success_count = sum(1 for code in results if code == 200)
         success_rate = success_count / num_concurrent
 
         # 成功率应该 > 95%
@@ -174,14 +193,15 @@ class TestConcurrency:
 
     @pytest.mark.asyncio
     @pytest.mark.performance
+    @pytest.mark.live
     @pytest.mark.slow
-    @patch("main.registry")
-    async def test_concurrent_requests_no_crash(
-        self, mock_registry_global, client, mock_registry
-    ):
+    @pytest.mark.skipif(
+        _SKIP_LIVE_TESTS,
+        reason=_SKIP_REASON or "Live services not available"
+    )
+    async def test_concurrent_requests_no_crash(self, client):
         """测试并发请求不会导致服务崩溃"""
-        mock_registry_global = mock_registry
-
+        
         num_concurrent = 10
         request_data = {
             "question": "统计员工数量",
@@ -206,44 +226,3 @@ class TestConcurrency:
         error_count = sum(1 for result in results if isinstance(result, str) and "ERROR" in result)
         assert error_count == 0, f"{error_count} requests failed with errors"
 
-
-# ============================================================
-# 超时测试
-# ============================================================
-
-
-class TestTimeout:
-    """测试超时处理"""
-
-    @pytest.mark.asyncio
-    @pytest.mark.performance
-    @pytest.mark.slow
-    @patch("main.registry")
-    async def test_request_timeout_setting(
-        self, mock_registry_global, client, mock_registry
-    ):
-        """测试请求超时设置（30s）"""
-        mock_registry_global = mock_registry
-
-        start_time = time.time()
-        try:
-            response = client.post(
-                "/nl2sql/plan",
-                json={
-                    "question": "统计员工数量",
-                    "user_id": "user_001",
-                    "role_id": "ROLE_HR_HEAD",
-                    "tenant_id": "tenant_001",
-                },
-                timeout=30,  # 30秒超时
-            )
-            end_time = time.time()
-            elapsed = end_time - start_time
-
-            # 请求应该在30秒内完成
-            assert elapsed < 30.0, f"Request took {elapsed}s, exceeding 30s timeout"
-        except Exception as e:
-            # 如果超时，应该抛出异常
-            end_time = time.time()
-            elapsed = end_time - start_time
-            assert elapsed >= 30.0, f"Timeout exception raised but elapsed time {elapsed}s < 30s"

@@ -11,9 +11,23 @@ PLAN Schema Definition
 4. 禁止额外字段：防止 LLM 生成非法字段
 """
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Annotated, Any, List, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+
+# ============================================================
+# 验证器：将 None 转换为空列表
+# ============================================================
+def none_to_empty_list(v: Union[List[Any], None]) -> List[Any]:
+    """
+    验证器：如果传入 None，自动转换为空列表
+    
+    用于处理前端可能传入 null 或未传列表字段的情况。
+    """
+    if v is None:
+        return []
+    return v
 
 
 # ============================================================
@@ -228,30 +242,46 @@ class QueryPlan(BaseModel):
         description="查询意图，决定结果集的形状（AGG/TREND/DETAIL）"
     )
     
-    metrics: List[MetricItem] = Field(
-        default_factory=list,
-        description="指标列表，每个指标可配置时间对比模式"
-    )
+    metrics: Annotated[
+        List[MetricItem],
+        BeforeValidator(none_to_empty_list),
+        Field(
+            default_factory=list,
+            description="指标列表，每个指标可配置时间对比模式"
+        )
+    ]
     
-    dimensions: List[DimensionItem] = Field(
-        default_factory=list,
-        description="维度列表，用于分组聚合，时间维度可配置粒度"
-    )
+    dimensions: Annotated[
+        List[DimensionItem],
+        BeforeValidator(none_to_empty_list),
+        Field(
+            default_factory=list,
+            description="维度列表，用于分组聚合，时间维度可配置粒度"
+        )
+    ]
     
-    filters: List[FilterItem] = Field(
-        default_factory=list,
-        description="过滤器列表，用于筛选数据"
-    )
+    filters: Annotated[
+        List[FilterItem],
+        BeforeValidator(none_to_empty_list),
+        Field(
+            default_factory=list,
+            description="过滤器列表，用于筛选数据"
+        )
+    ]
     
     time_range: Optional[TimeRange] = Field(
         default=None,
         description="时间范围，用于限定查询的时间窗口"
     )
     
-    order_by: List[OrderItem] = Field(
-        default_factory=list,
-        description="排序规则列表，支持多字段排序"
-    )
+    order_by: Annotated[
+        List[OrderItem],
+        BeforeValidator(none_to_empty_list),
+        Field(
+            default_factory=list,
+            description="排序规则列表，支持多字段排序"
+        )
+    ]
     
     limit: Optional[int] = Field(
         default=None,
@@ -259,9 +289,13 @@ class QueryPlan(BaseModel):
         description="结果限制数量，如果为 None 则使用配置中的默认值"
     )
     
-    warnings: List[str] = Field(
-        default_factory=list,
-        description="警告信息列表，用于记录 LLM 生成时的异常或不确定情况"
-    )
+    warnings: Annotated[
+        List[str],
+        BeforeValidator(none_to_empty_list),
+        Field(
+            default_factory=list,
+            description="警告信息列表，用于记录 LLM 生成时的异常或不确定情况"
+        )
+    ]
 
 

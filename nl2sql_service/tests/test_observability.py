@@ -8,7 +8,7 @@ Observability Test Suite
 - 响应头：响应头包含X-Trace-ID
 """
 import io
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,6 +40,41 @@ def log_capture():
     )
     yield captured_logs
     logger.remove(handler_id)
+
+
+@pytest.fixture
+def mock_registry():
+    """创建模拟的 SemanticRegistry"""
+    registry = MagicMock()
+    registry.get_allowed_ids.return_value = {
+        "METRIC_GMV",
+        "METRIC_REVENUE",
+        "DIM_REGION",
+        "DIM_DEPARTMENT",
+    }
+    registry.get_metric_def.return_value = {
+        "id": "METRIC_GMV",
+        "entity_id": "ENTITY_ORDER",
+        "default_filters": [],
+        "default_time": None,
+    }
+    registry.get_dimension_def.return_value = {
+        "id": "DIM_REGION",
+        "entity_id": "ENTITY_ORDER",
+    }
+    registry.get_term.return_value = {
+        "id": "METRIC_GMV",
+        "entity_id": "ENTITY_ORDER",
+    }
+    registry.check_compatibility.return_value = True
+    registry.global_config = {
+        "global_settings": {},
+        "time_windows": [],
+    }
+    registry.keyword_index = {}
+    # Mock 异步方法 search_similar_terms
+    registry.search_similar_terms = AsyncMock(return_value=[])
+    return registry
 
 
 # ============================================================
@@ -77,34 +112,33 @@ class TestLoggingFields:
 
     @pytest.mark.asyncio
     @pytest.mark.observability
-    @patch("main.registry")
     async def test_logs_contain_request_id(
-        self, mock_registry_global, client, log_capture, mock_registry
+        self, client, log_capture, mock_registry
     ):
         """测试日志包含request_id"""
-        mock_registry_global = mock_registry
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            # 发送请求
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "统计员工数量",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
 
-        # 发送请求
-        response = client.post(
-            "/nl2sql/plan",
-            json={
-                "question": "统计员工数量",
-                "user_id": "user_001",
-                "role_id": "ROLE_HR_HEAD",
-                "tenant_id": "tenant_001",
-            },
-        )
+            # 获取响应头中的request_id
+            request_id = response.headers.get("X-Trace-ID") or response.headers.get(
+                "X-Request-ID"
+            )
 
-        # 获取响应头中的request_id
-        request_id = response.headers.get("X-Trace-ID") or response.headers.get(
-            "X-Request-ID"
-        )
-
-        if request_id:
-            # 验证日志中包含request_id（如果日志被捕获）
-            log_content = log_capture.getvalue()
-            # 注意：由于TestClient可能不触发完整的日志流程，这里主要验证响应头
-            assert request_id is not None
+            if request_id:
+                # 验证日志中包含request_id（如果日志被捕获）
+                log_content = log_capture.getvalue()
+                # 注意：由于TestClient可能不触发完整的日志流程，这里主要验证响应头
+                assert request_id is not None
 
 
 # ============================================================
@@ -117,27 +151,26 @@ class TestStageLogging:
 
     @pytest.mark.asyncio
     @pytest.mark.observability
-    @patch("main.registry")
     async def test_stage_logging_contains_stage_info(
-        self, mock_registry_global, client, log_capture, mock_registry
+        self, client, log_capture, mock_registry
     ):
         """测试Stage日志包含stage信息"""
-        mock_registry_global = mock_registry
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            # 发送请求
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "统计员工数量",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
 
-        # 发送请求
-        response = client.post(
-            "/nl2sql/plan",
-            json={
-                "question": "统计员工数量",
-                "user_id": "user_001",
-                "role_id": "ROLE_HR_HEAD",
-                "tenant_id": "tenant_001",
-            },
-        )
-
-        # 验证响应（实际测试中应该检查日志内容）
-        # 由于TestClient的限制，这里主要验证请求能正常处理
-        assert response.status_code in [200, 500]  # 500可能是mock问题
+            # 验证响应（实际测试中应该检查日志内容）
+            # 由于TestClient的限制，这里主要验证请求能正常处理
+            assert response.status_code in [200, 500]  # 500可能是mock问题
 
 
 # ============================================================
@@ -162,28 +195,27 @@ class TestErrorLogging:
 
     @pytest.mark.asyncio
     @pytest.mark.observability
-    @patch("main.registry")
     async def test_error_logs_contain_stage_info(
-        self, mock_registry_global, client, mock_registry
+        self, client, mock_registry
     ):
         """测试错误日志包含stage信息"""
-        mock_registry_global = mock_registry
+        import main
+        with patch.object(main, 'registry', mock_registry):
+            # 发送可能出错的请求
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "统计员工数量",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
 
-        # 发送可能出错的请求
-        response = client.post(
-            "/nl2sql/plan",
-            json={
-                "question": "统计员工数量",
-                "user_id": "user_001",
-                "role_id": "ROLE_HR_HEAD",
-                "tenant_id": "tenant_001",
-            },
-        )
-
-        # 验证响应（实际测试中应该检查错误日志内容）
-        # 错误响应应该包含追踪信息
-        if response.status_code >= 400:
-            assert "X-Trace-ID" in response.headers or "X-Request-ID" in response.headers
+            # 验证响应（实际测试中应该检查错误日志内容）
+            # 错误响应应该包含追踪信息
+            if response.status_code >= 400:
+                assert "X-Trace-ID" in response.headers or "X-Request-ID" in response.headers
 
 
 # ============================================================

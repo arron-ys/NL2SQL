@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: ["main"]
   workflow_dispatch:
-  schedule:
-    # 每天 UTC 时间 02:00 运行（北京时间 10:00）
-    - cron: '0 2 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,9 +15,12 @@ permissions:
   contents: read
 
 jobs:
-  tests:
+  # —— 工作1：快速测试（Push & PR） —— #
+  fast-tests:
+    name: Fast Tests (Push & PR)
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     defaults:
       run:
@@ -43,97 +43,102 @@ jobs:
           python -m pip install -U pip wheel
           pip install -r requirements.txt
 
-      - name: Run fast tests (push/PR)
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+      - name: Run Fast Tests (unit + integration)
         env:
           PYTHONPATH: ${{ github.workspace }}/nl2sql_service
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'fake-key-for-test' }}
-          JINA_API_KEY: ${{ secrets.JINA_API_KEY || 'fake-key-for-test' }}
-          DB_HOST: localhost
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: ""
-          DB_NAME: test_db
-          DB_TYPE: mysql
-          SEMANTICS_YAML_PATH: semantics
+          OPENAI_API_KEY: 'fake-key-for-test'
+          JINA_API_KEY: 'fake-key-for-test'
           VECTOR_STORE_MODE: memory
+          SEMANTICS_YAML_PATH: semantics
         run: |
           pytest tests/ -m "unit or integration" -v
 
-      - name: Run nightly tests (not slow)
-        if: github.event_name == 'schedule'
-        env:
-          PYTHONPATH: ${{ github.workspace }}/nl2sql_service
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'fake-key-for-test' }}
-          JINA_API_KEY: ${{ secrets.JINA_API_KEY || 'fake-key-for-test' }}
-          DB_HOST: localhost
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: ""
-          DB_NAME: test_db
-          DB_TYPE: mysql
-          SEMANTICS_YAML_PATH: semantics
-          VECTOR_STORE_MODE: memory
-        run: |
-          pytest tests/ -m "not slow" -v
-
-      - name: Run full tests (manual trigger)
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          PYTHONPATH: ${{ github.workspace }}/nl2sql_service
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'fake-key-for-test' }}
-          JINA_API_KEY: ${{ secrets.JINA_API_KEY || 'fake-key-for-test' }}
-          DB_HOST: localhost
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: ""
-          DB_NAME: test_db
-          DB_TYPE: mysql
-          SEMANTICS_YAML_PATH: semantics
-          VECTOR_STORE_MODE: memory
-        run: |
-          pytest tests/ -v
-
-  postman-tests:
+  # —— 工作2：手动触发 — 全量非 live 验证 —— #
+  full-validation-tests:
+    name: Full Validation (Manual)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # 仅在 nightly 或手动触发时运行
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: nl2sql_service
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: nl2sql_service/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip wheel
+          pip install -r requirements.txt
+
+      - name: Run Full Non-Live Tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/nl2sql_service
+          OPENAI_API_KEY: 'fake-key-for-test'
+          JINA_API_KEY: 'fake-key-for-test'
+          VECTOR_STORE_MODE: memory
+          SEMANTICS_YAML_PATH: semantics
+        run: |
+          pytest tests/ -m "not live" -v
+
+  # —— 工作3：手动触发 — Postman Smoke 测试 —— #
+  postman-tests:
+    name: Postman Smoke Tests (Manual)
+    if: github.event_name == 'workflow_dispatch'
+    needs: full-validation-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: nl2sql_service/requirements.txt
+
+      - name: Install Python dependencies
+        working-directory: nl2sql_service
+        run: |
+          python -m pip install -U pip wheel
+          pip install -r requirements.txt
+
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: '18'
 
       - name: Install Newman
         run: npm install -g newman
 
-      - name: Start service
+      - name: Start service and wait for health
         working-directory: nl2sql_service
         env:
           PYTHONPATH: ${{ github.workspace }}/nl2sql_service
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'fake-key-for-test' }}
-          JINA_API_KEY: ${{ secrets.JINA_API_KEY || 'fake-key-for-test' }}
-          DB_HOST: localhost
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: ""
-          DB_NAME: test_db
-          DB_TYPE: mysql
-          SEMANTICS_YAML_PATH: semantics
+          OPENAI_API_KEY: 'fake-key-for-test'
+          JINA_API_KEY: 'fake-key-for-test'
           VECTOR_STORE_MODE: memory
+          SEMANTICS_YAML_PATH: semantics
         run: |
-          # 启动服务
           python -m uvicorn main:app --host 0.0.0.0 --port 8000 &
-          # 等待服务启动
+
           sleep 5
-          # 健康检查
+          # 等待服务健康就绪，最多 30 次 2s 重试 = 60s
           for i in {1..30}; do
-            if curl -f http://localhost:8000/health; then
+            if curl -f http://localhost:8000/health >/dev/null; then
               echo "Service is ready"
               break
             fi
@@ -141,17 +146,21 @@ jobs:
             sleep 2
           done
 
+          # 最后判断一次:
+          if ! curl -f http://localhost:8000/health >/dev/null; then
+            echo "Service failed to start after 60 seconds"
+            exit 1
+          fi
+
       - name: Run Postman Tests
-        env:
-          BASE_URL: http://localhost:8000
         run: |
+          mkdir -p results
           newman run postman/NL2SQL_Plan_Collection.json \
             -e postman/environments/local.example.json \
-            --env-var "base_url=${BASE_URL}" \
+            --env-var "base_url=http://localhost:8000" \
             --reporters cli,junit \
             --reporter-junit-export results/newman-results.xml \
             --folder "01_Smoke Tests"
-        continue-on-error: true
 
       - name: Upload Newman Results
         if: always()
@@ -159,3 +168,4 @@ jobs:
         with:
           name: newman-results
           path: results/newman-results.xml
+          if-no-files-found: warn
