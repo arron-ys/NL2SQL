@@ -99,9 +99,9 @@ def mock_ai_client():
 @pytest.mark.integration
 @pytest.mark.asyncio
 @patch("main.registry")
-@patch("stages.stage1_decomposition.process_request")
-@patch("stages.stage2_plan_generation.process_subquery")
-@patch("stages.stage3_validation.validate_and_normalize_plan")
+@patch("main.stage1_decomposition.process_request")
+@patch("main.stage2_plan_generation.process_subquery")
+@patch("main.stage3_validation.validate_and_normalize_plan")
 async def test_regression_case(
     mock_validate,
     mock_generate_plan,

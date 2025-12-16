@@ -79,10 +79,10 @@ class TestE2EPipeline:
     @pytest.mark.asyncio
     @pytest.mark.e2e
     @patch("main.registry")
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
-    @patch("stages.stage4_sql_gen.generate_sql")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage4_sql_gen.generate_sql")
     async def test_plan_to_sql_e2e(
         self,
         mock_generate_sql,
@@ -164,10 +164,10 @@ class TestE2EPipeline:
     @pytest.mark.asyncio
     @pytest.mark.e2e
     @patch("main.registry")
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
-    @patch("stages.stage4_sql_gen.generate_sql")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage4_sql_gen.generate_sql")
     async def test_e2e_with_different_intents(
         self,
         mock_generate_sql,
@@ -248,7 +248,7 @@ class TestE2EPipeline:
     @pytest.mark.asyncio
     @pytest.mark.e2e
     @patch("main.registry")
-    @patch("stages.stage4_sql_gen.generate_sql")
+    @patch("main.stage4_sql_gen.generate_sql")
     async def test_sql_generation_with_different_db_types(
         self,
         mock_generate_sql,

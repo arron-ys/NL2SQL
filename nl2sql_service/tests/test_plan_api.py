@@ -89,9 +89,9 @@ class TestPlanAPISuccess:
     """测试 Plan API 成功场景"""
 
     @pytest.mark.asyncio
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
     async def test_plan_api_success_agg(
         self,
         mock_validate,
@@ -150,9 +150,9 @@ class TestPlanAPISuccess:
             assert len(plan["metrics"]) > 0
 
     @pytest.mark.asyncio
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
     async def test_plan_api_success_trend(
         self,
         mock_validate,
@@ -208,9 +208,9 @@ class TestPlanAPISuccess:
             assert "time_range" in plan
 
     @pytest.mark.asyncio
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
     async def test_plan_api_success_detail(
         self,
         mock_validate,
@@ -473,8 +473,8 @@ class TestErrorContract:
             assert "No sub-queries" in error["detail"]
 
     @pytest.mark.asyncio
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
     async def test_error_contract_500_status_stage2_error(
         self,
         mock_generate_plan,
@@ -517,9 +517,9 @@ class TestErrorContract:
             assert "Internal server error" in error["detail"]
 
     @pytest.mark.asyncio
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
     async def test_error_contract_missing_metric_error(
         self,
         mock_validate,
@@ -568,9 +568,9 @@ class TestErrorContract:
             assert "Internal server error" in error["detail"]
 
     @pytest.mark.asyncio
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
     async def test_error_contract_permission_denied_error(
         self,
         mock_validate,
@@ -659,9 +659,9 @@ class TestPlanResponseContract:
                 pytest.fail(f"Plan response validation failed: {e}")
 
     @pytest.mark.asyncio
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
     async def test_plan_response_has_required_fields(
         self,
         mock_validate,
@@ -725,9 +725,9 @@ class TestPlanResponseContract:
             assert "warnings" in plan
 
     @pytest.mark.asyncio
-    @patch("stages.stage1_decomposition.process_request")
-    @patch("stages.stage2_plan_generation.process_subquery")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
     async def test_plan_response_intent_enum(
         self,
         mock_validate,

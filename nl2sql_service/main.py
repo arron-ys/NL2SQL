@@ -577,6 +577,9 @@ async def generate_plan(
     except RequestValidationError:
         # 让 RequestValidationError 自然传播，由异常处理器处理
         raise
+    except HTTPException:
+        # 让 HTTPException 自然传播，由 FastAPI 的异常处理器处理
+        raise
     except Exception as e:
         logger.error(
             "Plan generation failed",

@@ -35,7 +35,7 @@ class TestGracefulDegradation:
     @pytest.mark.asyncio
     @pytest.mark.stability
     @patch("main.registry")
-    @patch("stages.stage2_plan_generation.process_subquery")
+    @patch("main.stage2_plan_generation.process_subquery")
     async def test_llm_service_failure_handling(
         self,
         mock_generate_plan,
@@ -91,7 +91,7 @@ class TestGracefulDegradation:
     @pytest.mark.asyncio
     @pytest.mark.stability
     @patch("main.registry")
-    @patch("stages.stage1_decomposition.process_request")
+    @patch("main.stage1_decomposition.process_request")
     async def test_stage_failure_handling(
         self,
         mock_decomposition,
@@ -186,7 +186,7 @@ class TestDependencyFailure:
     @pytest.mark.asyncio
     @pytest.mark.stability
     @patch("main.registry")
-    @patch("stages.stage3_validation.validate_and_normalize_plan")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
     async def test_validation_failure_handling(
         self,
         mock_validate,
