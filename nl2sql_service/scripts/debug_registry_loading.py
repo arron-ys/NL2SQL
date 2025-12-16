@@ -20,6 +20,10 @@ import yaml
 nl2sql_service_dir = Path(__file__).parent
 sys.path.insert(0, str(nl2sql_service_dir))
 
+# 加载 .env 文件（在导入其他模块之前）
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=nl2sql_service_dir / ".env")
+
 # 现在可以导入项目模块
 from core.semantic_registry import SemanticRegistry
 from utils import log_manager

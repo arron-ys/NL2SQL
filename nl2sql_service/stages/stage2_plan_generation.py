@@ -346,6 +346,7 @@ async def process_subquery(
     try:
         query_plan = QueryPlan(**cleaned_plan)
         
+        # 记录 Plan 的详细信息
         logger.info(
             "Stage 2 completed successfully",
             extra={
@@ -353,7 +354,13 @@ async def process_subquery(
                 "metrics_count": len(query_plan.metrics),
                 "dimensions_count": len(query_plan.dimensions),
                 "filters_count": len(query_plan.filters),
-                "warnings_count": len(query_plan.warnings)
+                "warnings_count": len(query_plan.warnings),
+                "metrics": [{"id": m.id, "compare_mode": m.compare_mode.value if m.compare_mode else None} for m in query_plan.metrics],
+                "dimensions": [{"id": d.id, "time_grain": d.time_grain.value if d.time_grain else None} for d in query_plan.dimensions],
+                "filters": [{"id": f.id, "op": f.op.value, "values": f.values} for f in query_plan.filters],
+                "time_range": query_plan.time_range.model_dump() if query_plan.time_range else None,
+                "order_by": [{"id": o.id, "direction": o.direction.value} for o in query_plan.order_by] if query_plan.order_by else [],
+                "limit": query_plan.limit
             }
         )
         

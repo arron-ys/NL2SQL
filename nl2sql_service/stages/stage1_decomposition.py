@@ -212,11 +212,23 @@ async def process_request(
         sub_queries=normalized_sub_queries
     )
     
+    # 记录每个子查询的详细信息
+    for idx, sub_query in enumerate(normalized_sub_queries):
+        logger.info(
+            f"Sub-query {idx + 1}/{len(normalized_sub_queries)}",
+            extra={
+                "sub_query_id": sub_query.id,
+                "description": sub_query.description,
+                "request_id": request_id
+            }
+        )
+    
     logger.info(
         "Stage 1 completed successfully",
         extra={
             "sub_query_count": len(normalized_sub_queries),
-            "request_id": request_id
+            "request_id": request_id,
+            "sub_queries": [{"id": sq.id, "description": sq.description} for sq in normalized_sub_queries]
         }
     )
     

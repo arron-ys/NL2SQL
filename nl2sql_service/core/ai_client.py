@@ -54,34 +54,154 @@ class AIClient:
     
     def _default_config(self) -> Dict[str, Any]:
         """生成默认配置（从环境变量读取）"""
-        return {
-            "default_provider": "openai",
-            "providers": {
-                "openai": {
-                    "api_key": os.getenv("OPENAI_API_KEY"),
-                    "base_url": os.getenv("OPENAI_BASE_URL"),
-                },
-                "jina": {
-                    "api_key": os.getenv("JINA_API_KEY"),
-                    "base_url": os.getenv("JINA_BASE_URL"),
-                },
+        # 读取 API keys
+        openai_key = os.getenv("OPENAI_API_KEY")
+        jina_key = os.getenv("JINA_API_KEY")
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+        qwen_key = os.getenv("QWEN_API_KEY")
+        
+        # 读取模型配置（支持从环境变量配置，提供默认值）
+        # OpenAI 模型配置
+        openai_model_query_decomposition = os.getenv("OPENAI_MODEL_QUERY_DECOMPOSITION", "gpt-4o-mini")
+        openai_model_plan_generation = os.getenv("OPENAI_MODEL_PLAN_GENERATION", "gpt-4o-mini")
+        openai_model_answer_generation = os.getenv("OPENAI_MODEL_ANSWER_GENERATION", "gpt-4o-mini")
+        
+        # DeepSeek 模型配置（默认值：chat 用于对话，reasoner 用于推理）
+        deepseek_model_query_decomposition = os.getenv("DEEPSEEK_MODEL_QUERY_DECOMPOSITION", "deepseek-chat")
+        deepseek_model_plan_generation = os.getenv("DEEPSEEK_MODEL_PLAN_GENERATION", "deepseek-reasoner")
+        deepseek_model_answer_generation = os.getenv("DEEPSEEK_MODEL_ANSWER_GENERATION", "deepseek-chat")
+        
+        # Qwen 模型配置（默认值：turbo 快速，max 高质量，plus 平衡）
+        qwen_model_query_decomposition = os.getenv("QWEN_MODEL_QUERY_DECOMPOSITION", "qwen-turbo")
+        qwen_model_plan_generation = os.getenv("QWEN_MODEL_PLAN_GENERATION", "qwen-max")
+        qwen_model_answer_generation = os.getenv("QWEN_MODEL_ANSWER_GENERATION", "qwen-plus")
+        
+        # Jina 模型配置
+        jina_model_embedding = os.getenv("JINA_MODEL_EMBEDDING", "jina-embeddings-v3")
+        
+        # 构建 providers 配置
+        providers_config = {
+            "openai": {
+                "api_key": openai_key,
+                "base_url": os.getenv("OPENAI_BASE_URL"),
+                "type": "openai",
             },
+            "jina": {
+                "api_key": jina_key,
+                "base_url": os.getenv("JINA_BASE_URL"),
+                "type": "jina",
+            },
+        }
+        
+        # 添加 DeepSeek 配置（如果提供了 API Key）
+        if deepseek_key:
+            providers_config["deepseek"] = {
+                "api_key": deepseek_key,
+                "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+                "type": "openai",  # DeepSeek 使用 OpenAI 兼容的 API
+            }
+        
+        # 添加 Qwen 配置（如果提供了 API Key）
+        if qwen_key:
+            providers_config["qwen"] = {
+                "api_key": qwen_key,
+                "base_url": os.getenv(
+                    "QWEN_BASE_URL",
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                ),
+                "type": "openai",  # Qwen 使用 OpenAI 兼容的 API
+            }
+        
+        # 确定 model_mapping 中的 provider
+        # 优先级：1. DEFAULT_LLM_PROVIDER 环境变量（明确指定）
+        #         2. 自动选择（DeepSeek > Qwen > OpenAI）
+        default_llm_provider = os.getenv("DEFAULT_LLM_PROVIDER", "").lower()
+        
+        # 验证指定的 provider 是否配置了 API Key
+        if default_llm_provider:
+            if default_llm_provider == "deepseek" and not deepseek_key:
+                logger.warning(
+                    "DEFAULT_LLM_PROVIDER is set to 'deepseek' but DEEPSEEK_API_KEY is not configured. "
+                    "Falling back to auto-selection."
+                )
+                default_llm_provider = ""
+            elif default_llm_provider == "qwen" and not qwen_key:
+                logger.warning(
+                    "DEFAULT_LLM_PROVIDER is set to 'qwen' but QWEN_API_KEY is not configured. "
+                    "Falling back to auto-selection."
+                )
+                default_llm_provider = ""
+            elif default_llm_provider == "openai" and not openai_key:
+                logger.warning(
+                    "DEFAULT_LLM_PROVIDER is set to 'openai' but OPENAI_API_KEY is not configured. "
+                    "Falling back to auto-selection."
+                )
+                default_llm_provider = ""
+            elif default_llm_provider not in ["openai", "deepseek", "qwen"]:
+                logger.warning(
+                    f"DEFAULT_LLM_PROVIDER is set to '{default_llm_provider}' which is not supported. "
+                    "Supported values: openai, deepseek, qwen. Falling back to auto-selection."
+                )
+                default_llm_provider = ""
+        
+        # 如果没有明确指定或指定无效，使用自动选择逻辑
+        if not default_llm_provider:
+            if deepseek_key:
+                default_llm_provider = "deepseek"
+            elif qwen_key:
+                default_llm_provider = "qwen"
+            else:
+                default_llm_provider = "openai"
+        
+        # 根据 provider 选择对应的模型
+        if default_llm_provider == "deepseek":
+            query_model = deepseek_model_query_decomposition
+            plan_model = deepseek_model_plan_generation
+            answer_model = deepseek_model_answer_generation
+        elif default_llm_provider == "qwen":
+            query_model = qwen_model_query_decomposition
+            plan_model = qwen_model_plan_generation
+            answer_model = qwen_model_answer_generation
+        else:
+            query_model = openai_model_query_decomposition
+            plan_model = openai_model_plan_generation
+            answer_model = openai_model_answer_generation
+        
+        # 记录 API key 读取情况（用于调试）
+        logger.info(
+            "LLM Provider configuration",
+            extra={
+                "openai_key_exists": bool(openai_key),
+                "deepseek_key_exists": bool(deepseek_key),
+                "qwen_key_exists": bool(qwen_key),
+                "jina_key_exists": bool(jina_key),
+                "default_llm_provider": default_llm_provider,
+                "query_model": query_model,
+                "plan_model": plan_model,
+                "answer_model": answer_model,
+                "jina_model_embedding": jina_model_embedding
+            }
+        )
+        
+        return {
+            "default_provider": default_llm_provider,
+            "providers": providers_config,
             "model_mapping": {
                 "query_decomposition": {
-                    "provider": "openai",
-                    "model": "gpt-4o-mini"
+                    "provider": default_llm_provider,
+                    "model": query_model
                 },
                 "plan_generation": {
-                    "provider": "openai",
-                    "model": "gpt-4o-mini"
+                    "provider": default_llm_provider,
+                    "model": plan_model
                 },
                 "answer_generation": {
-                    "provider": "openai",
-                    "model": "gpt-4o-mini"
+                    "provider": default_llm_provider,
+                    "model": answer_model
                 },
                 "embedding": {
                     "provider": "jina",
-                    "model": "jina-embeddings-v3"
+                    "model": jina_model_embedding
                 },
             },
         }
@@ -93,12 +213,22 @@ class AIClient:
         # 动态遍历所有 provider 配置
         for provider_name, provider_config in providers_config.items():
             api_key = provider_config.get("api_key")
-            if not api_key:
+            
+            # 检查 API key 是否存在（包括空字符串的情况）
+            if not api_key or (isinstance(api_key, str) and not api_key.strip()):
                 logger.warning(
                     f"API key not set for provider '{provider_name}', "
-                    f"provider will not be available"
+                    f"provider will not be available. "
+                    f"Please set {provider_name.upper()}_API_KEY in .env file. "
+                    f"Current value: {repr(api_key)}"
                 )
                 continue
+            
+            # 记录 API key 已设置（但不记录实际值，避免泄露）
+            logger.debug(
+                f"API key found for provider '{provider_name}'",
+                extra={"key_length": len(api_key) if api_key else 0}
+            )
             
             # 确定 Provider 类
             # 优先使用显式的 type 字段
@@ -129,18 +259,45 @@ class AIClient:
             
             # 初始化 Provider 实例
             try:
-                self._providers[provider_name] = provider_class(
-                    api_key=api_key,
-                    base_url=provider_config.get("base_url")
+                # 构建初始化参数
+                init_kwargs = {
+                    "api_key": api_key,
+                    "base_url": provider_config.get("base_url")
+                }
+                
+                # 对于 OpenAI 类型的 provider，添加超时和代理配置
+                if provider_type == "openai":
+                    # 超时配置：优先使用通用 LLM_TIMEOUT，否则使用 provider 特定配置，最后使用默认值
+                    # 注意：超时配置会在 OpenAIProvider 内部处理，这里不需要显式传递
+                    # 代理配置：从环境变量或配置中读取
+                    init_kwargs["proxy"] = provider_config.get("proxy")
+                    # timeout 参数会在 OpenAIProvider.__init__ 中从环境变量读取，不需要在这里传递
+                
+                logger.info(
+                    f"Initializing provider '{provider_name}' with type '{provider_type}'",
+                    extra={
+                        "has_api_key": bool(api_key),
+                        "api_key_length": len(api_key) if api_key else 0,
+                        "has_proxy": bool(init_kwargs.get("proxy")),
+                        "timeout": init_kwargs.get("timeout")
+                    }
                 )
-                logger.debug(
-                    f"Initialized provider '{provider_name}' with type '{provider_type}'",
+                
+                self._providers[provider_name] = provider_class(**init_kwargs)
+                logger.info(
+                    f"Successfully initialized provider '{provider_name}' with type '{provider_type}'",
                     extra={"base_url": provider_config.get("base_url") or "default"}
                 )
             except Exception as e:
                 logger.error(
                     f"Failed to initialize provider '{provider_name}': {e}",
-                    extra={"provider_type": provider_type}
+                    extra={
+                        "provider_type": provider_type,
+                        "error_type": type(e).__name__,
+                        "has_api_key": bool(api_key),
+                        "api_key_length": len(api_key) if api_key else 0
+                    },
+                    exc_info=True
                 )
                 continue
     
@@ -386,25 +543,99 @@ class AIClient:
                 "type": "openai",  # Qwen 使用 OpenAI 兼容的 API
             }
         
+        # 读取模型配置（支持从环境变量配置，提供默认值）
+        # OpenAI 模型配置
+        openai_model_query_decomposition = get_config_value("OPENAI_MODEL_QUERY_DECOMPOSITION", "gpt-4o-mini")
+        openai_model_plan_generation = get_config_value("OPENAI_MODEL_PLAN_GENERATION", "gpt-4o-mini")
+        openai_model_answer_generation = get_config_value("OPENAI_MODEL_ANSWER_GENERATION", "gpt-4o-mini")
+        
+        # DeepSeek 模型配置
+        deepseek_model_query_decomposition = get_config_value("DEEPSEEK_MODEL_QUERY_DECOMPOSITION", "deepseek-chat")
+        deepseek_model_plan_generation = get_config_value("DEEPSEEK_MODEL_PLAN_GENERATION", "deepseek-reasoner")
+        deepseek_model_answer_generation = get_config_value("DEEPSEEK_MODEL_ANSWER_GENERATION", "deepseek-chat")
+        
+        # Qwen 模型配置
+        qwen_model_query_decomposition = get_config_value("QWEN_MODEL_QUERY_DECOMPOSITION", "qwen-turbo")
+        qwen_model_plan_generation = get_config_value("QWEN_MODEL_PLAN_GENERATION", "qwen-max")
+        qwen_model_answer_generation = get_config_value("QWEN_MODEL_ANSWER_GENERATION", "qwen-plus")
+        
+        # Jina 模型配置
+        jina_model_embedding = get_config_value("JINA_MODEL_EMBEDDING", "jina-embeddings-v3")
+        
+        # 确定 model_mapping 中的 provider
+        # 优先级：1. DEFAULT_LLM_PROVIDER 环境变量（明确指定）
+        #         2. 自动选择（DeepSeek > Qwen > OpenAI）
+        default_llm_provider = get_config_value("DEFAULT_LLM_PROVIDER", "").lower()
+        
+        # 验证指定的 provider 是否配置了 API Key
+        if default_llm_provider:
+            if default_llm_provider == "deepseek" and not deepseek_api_key:
+                logger.warning(
+                    "DEFAULT_LLM_PROVIDER is set to 'deepseek' but DEEPSEEK_API_KEY is not configured. "
+                    "Falling back to auto-selection."
+                )
+                default_llm_provider = ""
+            elif default_llm_provider == "qwen" and not qwen_api_key:
+                logger.warning(
+                    "DEFAULT_LLM_PROVIDER is set to 'qwen' but QWEN_API_KEY is not configured. "
+                    "Falling back to auto-selection."
+                )
+                default_llm_provider = ""
+            elif default_llm_provider == "openai" and not get_config_value("OPENAI_API_KEY"):
+                logger.warning(
+                    "DEFAULT_LLM_PROVIDER is set to 'openai' but OPENAI_API_KEY is not configured. "
+                    "Falling back to auto-selection."
+                )
+                default_llm_provider = ""
+            elif default_llm_provider not in ["openai", "deepseek", "qwen"]:
+                logger.warning(
+                    f"DEFAULT_LLM_PROVIDER is set to '{default_llm_provider}' which is not supported. "
+                    "Supported values: openai, deepseek, qwen. Falling back to auto-selection."
+                )
+                default_llm_provider = ""
+        
+        # 如果没有明确指定或指定无效，使用自动选择逻辑
+        if not default_llm_provider:
+            if deepseek_api_key:
+                default_llm_provider = "deepseek"
+            elif qwen_api_key:
+                default_llm_provider = "qwen"
+            else:
+                default_llm_provider = "openai"
+        
+        # 根据 provider 选择对应的模型
+        if default_llm_provider == "deepseek":
+            query_model = deepseek_model_query_decomposition
+            plan_model = deepseek_model_plan_generation
+            answer_model = deepseek_model_answer_generation
+        elif default_llm_provider == "qwen":
+            query_model = qwen_model_query_decomposition
+            plan_model = qwen_model_plan_generation
+            answer_model = qwen_model_answer_generation
+        else:
+            query_model = openai_model_query_decomposition
+            plan_model = openai_model_plan_generation
+            answer_model = openai_model_answer_generation
+        
         config = {
-            "default_provider": "openai",
+            "default_provider": default_llm_provider,
             "providers": providers_config,
             "model_mapping": {
                 "query_decomposition": {
-                    "provider": "openai",
-                    "model": "gpt-4o-mini"
+                    "provider": default_llm_provider,
+                    "model": query_model
                 },
                 "plan_generation": {
-                    "provider": "openai",
-                    "model": "gpt-4o-mini"
+                    "provider": default_llm_provider,
+                    "model": plan_model
                 },
                 "answer_generation": {
-                    "provider": "openai",
-                    "model": "gpt-4o-mini"
+                    "provider": default_llm_provider,
+                    "model": answer_model
                 },
                 "embedding": {
                     "provider": "jina",
-                    "model": "jina-embeddings-v3"
+                    "model": jina_model_embedding
                 },
             },
         }

@@ -11,6 +11,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional, Union
 
+# 在导入其他模块之前，先加载 .env 文件
+# 这样 os.getenv() 才能读取到 .env 文件中的环境变量
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -526,7 +531,8 @@ async def generate_plan(
             "Stage 1 completed",
             extra={
                 "request_id": actual_request_id,
-                "sub_query_count": len(query_desc.sub_queries)
+                "sub_query_count": len(query_desc.sub_queries),
+                "sub_queries": [{"id": sq.id, "description": sq.description} for sq in query_desc.sub_queries]
             }
         )
         
@@ -539,6 +545,15 @@ async def generate_plan(
         
         # 简化逻辑：只处理第一个子查询
         first_sub_query = query_desc.sub_queries[0]
+        
+        logger.info(
+            "Processing first sub-query for plan generation",
+            extra={
+                "request_id": actual_request_id,
+                "sub_query_id": first_sub_query.id,
+                "sub_query_description": first_sub_query.description
+            }
+        )
         
         # Stage 2: Plan Generation
         plan = await stage2_plan_generation.process_subquery(
@@ -568,7 +583,17 @@ async def generate_plan(
                 "request_id": actual_request_id,
                 "intent": validated_plan.intent.value,
                 "metrics_count": len(validated_plan.metrics),
-                "dimensions_count": len(validated_plan.dimensions)
+                "dimensions_count": len(validated_plan.dimensions),
+                "filters_count": len(validated_plan.filters),
+                "final_plan": {
+                    "intent": validated_plan.intent.value,
+                    "metrics": [{"id": m.id, "compare_mode": m.compare_mode.value if m.compare_mode else None} for m in validated_plan.metrics],
+                    "dimensions": [{"id": d.id, "time_grain": d.time_grain.value if d.time_grain else None} for d in validated_plan.dimensions],
+                    "filters": [{"id": f.id, "op": f.op.value, "values": f.values} for f in validated_plan.filters],
+                    "time_range": validated_plan.time_range.model_dump() if validated_plan.time_range else None,
+                    "order_by": [{"id": o.id, "direction": o.direction.value} for o in validated_plan.order_by] if validated_plan.order_by else [],
+                    "limit": validated_plan.limit
+                }
             }
         )
         

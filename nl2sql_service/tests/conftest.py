@@ -3,6 +3,8 @@ Pytest Configuration and Auto-Marking
 
 根据测试文件路径自动为测试项添加 marker，避免手动标记遗漏。
 强制校验：每个测试项必须至少拥有一个分层 marker。
+
+注意：.env 文件只在标记为 'live' 的测试中加载，避免非 live 测试使用真实 API（有 token 成本）。
 """
 import os
 from pathlib import Path

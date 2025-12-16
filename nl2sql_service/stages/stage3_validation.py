@@ -387,7 +387,12 @@ async def validate_and_normalize_plan(
                 "filters_count": len(validated_plan.filters),
                 "has_time_range": validated_plan.time_range is not None,
                 "limit": validated_plan.limit,
-                "warnings_count": len(validated_plan.warnings)
+                "warnings_count": len(validated_plan.warnings),
+                "validated_metrics": [{"id": m.id, "compare_mode": m.compare_mode.value if m.compare_mode else None} for m in validated_plan.metrics],
+                "validated_dimensions": [{"id": d.id, "time_grain": d.time_grain.value if d.time_grain else None} for d in validated_plan.dimensions],
+                "validated_filters": [{"id": f.id, "op": f.op.value, "values": f.values} for f in validated_plan.filters],
+                "validated_time_range": validated_plan.time_range.model_dump() if validated_plan.time_range else None,
+                "validated_order_by": [{"id": o.id, "direction": o.direction.value} for o in validated_plan.order_by] if validated_plan.order_by else []
             }
         )
         

@@ -10,6 +10,7 @@ Quality Evaluation Test Suite
 import yaml
 from datetime import date
 from pathlib import Path
+from typing import Any, Dict, List, Union
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -58,6 +59,76 @@ def mock_registry():
     # Mock 异步方法 search_similar_terms
     registry.search_similar_terms = AsyncMock(return_value=[])
     return registry
+
+
+# ============================================================
+# Helper Functions
+# ============================================================
+
+def normalize_metrics(metrics: Union[List[str], List[Dict[str, Any]], None]) -> List:
+    """
+    规范化 metrics：支持字符串列表和字典列表两种格式
+    
+    Args:
+        metrics: 可能是 ["METRIC_GMV"] 或 [{"id": "METRIC_GMV", "compare_mode": "WOW"}]
+    
+    Returns:
+        List[MetricItem]: MetricItem 对象列表
+    """
+    from schemas.plan import MetricItem, CompareMode
+    
+    if not metrics:
+        return []
+    
+    result = []
+    for m in metrics:
+        if isinstance(m, str):
+            # 字符串格式：直接创建 MetricItem
+            result.append(MetricItem(id=m))
+        elif isinstance(m, dict):
+            # 字典格式：提取 id 和 compare_mode
+            metric_id = m.get("id")
+            compare_mode_str = m.get("compare_mode")
+            compare_mode = None
+            if compare_mode_str:
+                compare_mode = CompareMode(compare_mode_str)
+            result.append(MetricItem(id=metric_id, compare_mode=compare_mode))
+        else:
+            raise ValueError(f"Invalid metric format: {m}")
+    return result
+
+
+def normalize_dimensions(dimensions: Union[List[str], List[Dict[str, Any]], None]) -> List:
+    """
+    规范化 dimensions：支持字符串列表和字典列表两种格式
+    
+    Args:
+        dimensions: 可能是 ["DIM_REGION"] 或 [{"id": "DIM_DATE", "time_grain": "DAY"}]
+    
+    Returns:
+        List[DimensionItem]: DimensionItem 对象列表
+    """
+    from schemas.plan import DimensionItem, TimeGrain
+    
+    if not dimensions:
+        return []
+    
+    result = []
+    for d in dimensions:
+        if isinstance(d, str):
+            # 字符串格式：直接创建 DimensionItem
+            result.append(DimensionItem(id=d))
+        elif isinstance(d, dict):
+            # 字典格式：提取 id 和 time_grain
+            dim_id = d.get("id")
+            time_grain_str = d.get("time_grain")
+            time_grain = None
+            if time_grain_str:
+                time_grain = TimeGrain(time_grain_str)
+            result.append(DimensionItem(id=dim_id, time_grain=time_grain))
+        else:
+            raise ValueError(f"Invalid dimension format: {d}")
+    return result
 
 
 # ============================================================
@@ -113,13 +184,15 @@ class TestPlanCorrectness:
                         # Mock Stage 2: 根据期望的intent返回Plan
                         mock_generate_plan.return_value = QueryPlan(
                             intent=PlanIntent(expected_intent),
-                            metrics=[MetricItem(id=m) for m in case["expected"].get("metrics", [])],
+                            metrics=normalize_metrics(case["expected"].get("metrics", [])),
+                            dimensions=normalize_dimensions(case["expected"].get("dimensions", [])),
                         )
                         
                         # Mock Stage 3: 验证后的Plan（与Stage 2相同）
                         mock_validate.return_value = QueryPlan(
                             intent=PlanIntent(expected_intent),
-                            metrics=[MetricItem(id=m) for m in case["expected"].get("metrics", [])],
+                            metrics=normalize_metrics(case["expected"].get("metrics", [])),
+                            dimensions=normalize_dimensions(case["expected"].get("dimensions", [])),
                         )
 
                         response = client.post(

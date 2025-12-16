@@ -4,8 +4,10 @@ OpenAI Provider Module
 实现 OpenAI 的 AI 提供商适配器。
 """
 import json
+import os
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+import httpx
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
@@ -25,7 +27,9 @@ class OpenAIProvider(BaseAIProvider):
     def __init__(
         self,
         api_key: str,
-        base_url: Optional[str] = None
+        base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
+        proxy: Optional[str] = None
     ):
         """
         初始化 OpenAI 提供商
@@ -33,13 +37,55 @@ class OpenAIProvider(BaseAIProvider):
         Args:
             api_key: OpenAI API Key
             base_url: OpenAI Base URL，如果为 None 则使用官方 API
+            timeout: 超时时间（秒），默认 60 秒
+            proxy: 代理 URL（如 "http://proxy.example.com:8080"），如果为 None 则从环境变量读取
         """
         self.api_key = api_key
         self.base_url = base_url
         
+        # 从环境变量读取代理配置（如果未提供）
+        # 优先级：1. 显式传入的 proxy 参数
+        #         2. OPENAI_PROXY 环境变量（推荐，专门用于 OpenAI）
+        #         3. HTTP_PROXY/HTTPS_PROXY 环境变量（向后兼容，系统级代理）
+        if proxy is None:
+            proxy = os.getenv("OPENAI_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("http_proxy") or os.getenv("https_proxy")
+        
+        # 设置超时时间（优先级：LLM_TIMEOUT > OPENAI_TIMEOUT > 默认值 60.0）
+        if timeout is None:
+            # 优先使用通用超时配置
+            timeout_str = os.getenv("LLM_TIMEOUT") or os.getenv("OPENAI_TIMEOUT", "60.0")
+            timeout = float(timeout_str)
+        
+        # 构建 HTTP 客户端配置
+        # 总是创建自定义 HTTP 客户端，以便应用超时和代理设置
+        http_client_kwargs = {}
+        
+        # 配置代理
+        # httpx.AsyncClient 使用 'proxy' 参数（不是 'proxies'）
+        # 如果 proxy 是字符串，直接传递；如果是字典，也直接传递
+        if proxy:
+            # httpx 支持字符串格式的代理 URL，会自动应用到 http 和 https
+            http_client_kwargs["proxy"] = proxy
+            logger.info(f"Using proxy for OpenAI API: {proxy}")
+        else:
+            logger.debug("No proxy configured for OpenAI API")
+        
+        # 配置超时（总是设置，确保有合理的超时时间）
+        http_timeout = httpx.Timeout(
+            connect=10.0,  # 连接超时 10 秒
+            read=timeout,  # 读取超时
+            write=10.0,    # 写入超时 10 秒
+            pool=5.0       # 连接池超时 5 秒
+        )
+        http_client_kwargs["timeout"] = http_timeout
+        
+        # 创建自定义 HTTP 客户端（总是创建，以应用超时和代理设置）
+        http_client = httpx.AsyncClient(**http_client_kwargs)
+        
         # 初始化异步客户端
         client_kwargs = {
             "api_key": self.api_key,
+            "http_client": http_client  # 总是使用自定义 HTTP 客户端（包含超时和代理配置）
         }
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
@@ -48,7 +94,11 @@ class OpenAIProvider(BaseAIProvider):
         
         logger.info(
             "OpenAIProvider initialized",
-            extra={"base_url": self.base_url or "default"}
+            extra={
+                "base_url": self.base_url or "default",
+                "timeout": timeout,
+                "has_proxy": bool(proxy)
+            }
         )
     
     async def chat(
@@ -167,13 +217,71 @@ class OpenAIProvider(BaseAIProvider):
             return parsed_json
         
         except Exception as e:
+            # 构建详细的错误信息
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # 尝试获取更多错误信息（如果是 OpenAI 异常）
+            extra_info = {
+                "error": error_msg,
+                "error_type": error_type,
+                "model": model,
+                "has_api_key": bool(self.api_key),
+                "api_key_length": len(self.api_key) if self.api_key else 0,
+                "base_url": self.base_url or "default"
+            }
+            
+            # OpenAI SDK 的异常通常有这些属性
+            if hasattr(e, "status_code"):
+                extra_info["status_code"] = e.status_code
+            if hasattr(e, "response"):
+                try:
+                    extra_info["response_text"] = str(e.response.text) if hasattr(e.response, "text") else str(e.response)
+                except:
+                    pass
+            if hasattr(e, "body"):
+                try:
+                    extra_info["body"] = str(e.body) if e.body else None
+                except:
+                    pass
+            if hasattr(e, "message"):
+                extra_info["api_message"] = str(e.message)
+            
+            # 对于连接错误，获取底层异常信息
+            if error_type == "APIConnectionError" and hasattr(e, "__cause__"):
+                cause = e.__cause__
+                if cause:
+                    extra_info["underlying_error"] = str(cause)
+                    extra_info["underlying_error_type"] = type(cause).__name__
+                    # 如果是 httpx 异常，获取更多信息
+                    if hasattr(cause, "request"):
+                        try:
+                            extra_info["request_url"] = str(cause.request.url) if cause.request else None
+                        except:
+                            pass
+            
+            # 输出详细的错误日志
             logger.error(
-                "OpenAI chat JSON completion failed",
-                extra={
-                    "error": str(e),
-                    "model": model
-                }
+                f"OpenAI chat JSON completion failed: {error_type} - {error_msg}",
+                extra=extra_info,
+                exc_info=True
             )
+            
+            # 对于连接错误，提供诊断建议
+            if error_type == "APIConnectionError":
+                logger.error(
+                    "Connection error detected. Possible causes:",
+                    extra={
+                        "diagnosis": {
+                            "1": "Network connectivity issue - check internet connection",
+                            "2": "Proxy required - set HTTP_PROXY or HTTPS_PROXY environment variable",
+                            "3": "Firewall blocking - check firewall settings",
+                            "4": "DNS resolution failed - check DNS settings",
+                            "5": "Timeout too short - increase OPENAI_TIMEOUT environment variable"
+                        }
+                    }
+                )
+            
             raise
     
     async def embed(

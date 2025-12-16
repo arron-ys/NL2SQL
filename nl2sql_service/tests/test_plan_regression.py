@@ -6,6 +6,7 @@ Plan Regression Test Suite
 """
 import yaml
 from pathlib import Path
+from typing import Any, Dict, List, Union
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -91,6 +92,72 @@ def mock_ai_client():
 
 
 # ============================================================
+# Helper Functions
+# ============================================================
+
+def normalize_metrics(metrics: Union[List[str], List[Dict[str, Any]], None]) -> List:
+    """
+    规范化 metrics：支持字符串列表和字典列表两种格式
+    
+    Args:
+        metrics: 可能是 ["METRIC_GMV"] 或 [{"id": "METRIC_GMV", "compare_mode": "WOW"}]
+    
+    Returns:
+        List[MetricItem]: MetricItem 对象列表
+    """
+    from schemas.plan import MetricItem, CompareMode
+    
+    if not metrics:
+        return []
+    
+    result = []
+    for m in metrics:
+        if isinstance(m, str):
+            result.append(MetricItem(id=m))
+        elif isinstance(m, dict):
+            metric_id = m.get("id")
+            compare_mode_str = m.get("compare_mode")
+            compare_mode = None
+            if compare_mode_str:
+                compare_mode = CompareMode(compare_mode_str)
+            result.append(MetricItem(id=metric_id, compare_mode=compare_mode))
+        else:
+            raise ValueError(f"Invalid metric format: {m}")
+    return result
+
+
+def normalize_dimensions(dimensions: Union[List[str], List[Dict[str, Any]], None]) -> List:
+    """
+    规范化 dimensions：支持字符串列表和字典列表两种格式
+    
+    Args:
+        dimensions: 可能是 ["DIM_REGION"] 或 [{"id": "DIM_DATE", "time_grain": "DAY"}]
+    
+    Returns:
+        List[DimensionItem]: DimensionItem 对象列表
+    """
+    from schemas.plan import DimensionItem, TimeGrain
+    
+    if not dimensions:
+        return []
+    
+    result = []
+    for d in dimensions:
+        if isinstance(d, str):
+            result.append(DimensionItem(id=d))
+        elif isinstance(d, dict):
+            dim_id = d.get("id")
+            time_grain_str = d.get("time_grain")
+            time_grain = None
+            if time_grain_str:
+                time_grain = TimeGrain(time_grain_str)
+            result.append(DimensionItem(id=dim_id, time_grain=time_grain))
+        else:
+            raise ValueError(f"Invalid dimension format: {d}")
+    return result
+
+
+# ============================================================
 # Regression Test Cases
 # ============================================================
 
@@ -148,23 +215,10 @@ async def test_regression_case(
         
         # Mock Stage 2: Plan Generation
         # 根据用例的 expected_* 构建 Plan
-        from schemas.plan import MetricItem, DimensionItem, TimeRange, TimeRangeType
+        from schemas.plan import TimeRange, TimeRangeType
         
-        metrics = []
-        if isinstance(expected_metrics, list):
-            for metric in expected_metrics:
-                if isinstance(metric, str):
-                    metrics.append(MetricItem(id=metric))
-                elif isinstance(metric, dict):
-                    metrics.append(MetricItem(**metric))
-        
-        dimensions = []
-        if isinstance(expected_dimensions, list):
-            for dim in expected_dimensions:
-                if isinstance(dim, str):
-                    dimensions.append(DimensionItem(id=dim))
-                elif isinstance(dim, dict):
-                    dimensions.append(DimensionItem(**dim))
+        metrics = normalize_metrics(expected_metrics)
+        dimensions = normalize_dimensions(expected_dimensions)
         
         time_range = None
         if expected_time_range:

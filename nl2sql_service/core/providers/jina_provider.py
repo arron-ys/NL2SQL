@@ -3,6 +3,7 @@ Jina Provider Module
 
 实现 Jina AI 的提供商适配器（主要用于嵌入）。
 """
+import os
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
@@ -36,12 +37,19 @@ class JinaProvider(BaseAIProvider):
         self.base_url = base_url or "https://api.jina.ai/v1"
         self.api_url = f"{self.base_url}/embeddings"
         
+        # 设置超时时间（优先级：LLM_TIMEOUT > JINA_TIMEOUT > 默认值 30.0）
+        timeout_str = os.getenv("LLM_TIMEOUT") or os.getenv("JINA_TIMEOUT", "30.0")
+        timeout = float(timeout_str)
+        
         # 初始化异步 HTTP 客户端
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._client = httpx.AsyncClient(timeout=timeout)
         
         logger.info(
             "JinaProvider initialized",
-            extra={"base_url": self.base_url}
+            extra={
+                "base_url": self.base_url,
+                "timeout": timeout
+            }
         )
     
     async def embed(
