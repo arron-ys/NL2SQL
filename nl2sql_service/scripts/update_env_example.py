@@ -46,7 +46,7 @@ proxy_section = (
 # ============================================================
 # 说明：
 # - 默认不信任系统代理环境变量（HTTP_PROXY/HTTPS_PROXY/ALL_PROXY），除非显式设置 PROXY_MODE=system
-# - OpenAI / DeepSeek / Qwen 分别使用各自的 *_PROXY，避免互相污染
+# - OpenAI / DeepSeek / Qwen / Jina 分别使用各自的 *_PROXY，避免互相污染
 #
 # PROXY_MODE:
 # - none:    禁用所有代理（强制直连），忽略系统代理 env（trust_env=False）
@@ -63,6 +63,8 @@ PROXY_STRICT=0
 OPENAI_PROXY=http://127.0.0.1:7897
 DEEPSEEK_PROXY=
 QWEN_PROXY=
+# Jina 默认也不读取系统 HTTP_PROXY/HTTPS_PROXY；仅在 PROXY_MODE=system 时才信任系统 env
+JINA_PROXY=
 #
 # 系统级代理（仅在 PROXY_MODE=system 时才会生效）
 HTTP_PROXY=

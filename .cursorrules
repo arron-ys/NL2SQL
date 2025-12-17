@@ -27,5 +27,17 @@ When writing tests in `tests/live/`:
 *   **Live (Real)**: Thresholds can be in seconds.
 
 ## 6. Execution & Dependencies
-*   **Run Tests**: Prefer using the PowerShell scripts in `nl2sql_service/scripts/` (e.g., `test_fast.ps1`, `test_live.ps1`). Adjust the path based on the current working directory.
+*   
+<!--
+**Run Tests**: By default, run only the minimal, change-related unit tests (prefer a targeted pytest invocation scoped to the edited test file(s) or the closest relevant test module). Do not run broad suites (e.g., pytest, pytest tests/, or pytest -m "not live") unless the user explicitly asks to “run full”, “run all tests”, or “run not live”. Prefer nl2sql_service/scripts/test_fast.ps1 only when the user requests broader coverage.Never run the full test suite unless explicitly requested
+-->
 *   **New Libraries**: If you import a new package, explicitly ask the user to add it to `nl2sql_service/requirements.txt`.
+
+## 7. Logging Standards (Observability)
+*   **INFO Level**: Strictly for **Flow & Summary**.
+    *   **Allowed**: Stage Start/End, Latency (ms), `request_id`, Result Summaries (e.g., "Retrieved 5 terms", "Plan generated successfully").
+    *   **Forbidden**: Full JSON objects, long lists, prompt text, SQL strings.
+*   **DEBUG Level**: For **Payloads & Details**.
+    *   **Required**: RAG term lists, `schema_context`, full Prompt previews, complete Plan JSON, generated SQL strings, and any list-type details.
+*   **ERROR/EXCEPTION**: Must include **Traceback**.
+    *   **Implementation**: Use `logger.exception(...)` or `logger.opt(exception=e).error(...)`.

@@ -4,14 +4,31 @@ Jina Provider Module
 实现 Jina AI 的提供商适配器（主要用于嵌入）。
 """
 import os
+import socket
+from urllib.parse import urlparse
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
+from core.errors import AppError
 from utils.log_manager import get_logger
 from .base import BaseAIProvider
 
 logger = get_logger(__name__)
+
+
+class JinaEmbeddingError(AppError):
+    """
+    Jina embedding 不可用错误（用于严格失败 + 可诊断）。
+    """
+    def __init__(self, message: str, *, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            code="EMBEDDING_UNAVAILABLE",
+            message=message,
+            error_stage="STAGE_2_PLAN_GENERATION",
+            details=details or {},
+            status_code=500,
+        )
 
 
 class JinaProvider(BaseAIProvider):
@@ -40,15 +57,110 @@ class JinaProvider(BaseAIProvider):
         # 设置超时时间（优先级：LLM_TIMEOUT > JINA_TIMEOUT > 默认值 30.0）
         timeout_str = os.getenv("LLM_TIMEOUT") or os.getenv("JINA_TIMEOUT", "30.0")
         timeout = float(timeout_str)
-        
-        # 初始化异步 HTTP 客户端
-        self._client = httpx.AsyncClient(timeout=timeout)
+
+        def _is_proxy_reachable(proxy_url: str) -> bool:
+            """
+            快速探测代理是否可连通（仅 TCP 探测）。
+            """
+            try:
+                parsed = urlparse(proxy_url)
+                host = parsed.hostname
+                port = parsed.port
+                if not host or not port:
+                    return True
+                with socket.create_connection((host, port), timeout=0.5):
+                    return True
+            except Exception:
+                return False
+
+        # ============================================================
+        # Proxy 统一控制（与 OpenAIProvider 对齐）
+        #
+        # PROXY_MODE:
+        # - none:     禁用代理，trust_env=False
+        # - explicit: 仅使用 JINA_PROXY，trust_env=False（默认）
+        # - system:   允许读取 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY，trust_env=True
+        #
+        # PROXY_STRICT:
+        # - 1: 显式代理不可达 => 直接报错（提示 JINA_PROXY 与 proxy_url）
+        # - 0: 显式代理不可达 => 降级直连，但仍 trust_env=False（避免系统 env 劫持）
+        # ============================================================
+        proxy_mode = (os.getenv("PROXY_MODE") or "explicit").strip().lower()
+        if proxy_mode not in {"none", "explicit", "system"}:
+            proxy_mode = "explicit"
+        proxy_strict_raw = (os.getenv("PROXY_STRICT") or "").strip()
+        proxy_strict = proxy_strict_raw in {"1", "true", "TRUE", "yes", "YES"}
+
+        self._proxy_mode: str = proxy_mode
+        self._proxy_strict: bool = proxy_strict
+        self._trust_env: bool = proxy_mode == "system"
+        self._proxy_source: str = "none"  # none|explicit|system
+        self._proxy_url: Optional[str] = None
+        self._proxy_downgraded: bool = False
+        self._proxy_disabled_reason: Optional[str] = None
+
+        explicit_proxy = os.getenv("JINA_PROXY")
+
+        if proxy_mode == "none":
+            self._proxy_source = "none"
+            self._proxy_url = None
+        elif proxy_mode == "explicit":
+            self._proxy_source = "explicit" if explicit_proxy else "none"
+            self._proxy_url = explicit_proxy
+        else:  # system
+            # system 模式下只信任系统 env proxy；不使用 JINA_PROXY（避免混用）
+            self._proxy_source = "system"
+            self._proxy_url = None
+
+        # 显式代理可达性检查（与 OpenAIProvider 一致）
+        if self._proxy_source == "explicit" and self._proxy_url:
+            if not _is_proxy_reachable(self._proxy_url):
+                self._proxy_disabled_reason = "unreachable"
+                logger.warning(
+                    "Jina proxy is configured but unreachable",
+                    extra={
+                        "provider": "jina",
+                        "proxy_mode": self._proxy_mode,
+                        "proxy_strict": self._proxy_strict,
+                        "proxy_source": self._proxy_source,
+                        "proxy_url": self._proxy_url,
+                        "trust_env": self._trust_env,
+                    },
+                )
+                if self._proxy_strict:
+                    raise ConnectionError(
+                        f"JINA_PROXY is set but unreachable: {self._proxy_url}. "
+                        f"Start your proxy process or set JINA_PROXY to the correct URL/port. "
+                        f"(PROXY_MODE={self._proxy_mode}, PROXY_STRICT=true)"
+                    )
+                # strict=false：降级直连，且必须 trust_env=False（避免被 HTTP_PROXY/HTTPS_PROXY 劫持）
+                self._proxy_url = None
+                self._proxy_source = "none"
+                self._trust_env = False
+                self._proxy_downgraded = True
+                logger.warning(
+                    "Jina proxy unreachable; downgraded to direct connection with trust_env=False",
+                    extra={"provider": "jina"},
+                )
+
+        # 初始化异步 HTTP 客户端（显式设置 trust_env）
+        client_kwargs: Dict[str, Any] = {"timeout": timeout, "trust_env": bool(self._trust_env)}
+        if self._proxy_source == "explicit" and self._proxy_url:
+            client_kwargs["proxy"] = self._proxy_url
+        self._client = httpx.AsyncClient(**client_kwargs)
         
         logger.info(
             "JinaProvider initialized",
             extra={
                 "base_url": self.base_url,
-                "timeout": timeout
+                "timeout": timeout,
+                "proxy_mode": self._proxy_mode,
+                "proxy_strict": self._proxy_strict,
+                "trust_env": self._trust_env,
+                "proxy_source": self._proxy_source,
+                "proxy_url": self._proxy_url,
+                "proxy_downgraded": self._proxy_downgraded,
+                "proxy_disabled_reason": self._proxy_disabled_reason,
             }
         )
     
@@ -102,7 +214,23 @@ class JinaProvider(BaseAIProvider):
                     "response": e.response.text[:200] if e.response else None
                 }
             )
-            raise
+            raise JinaEmbeddingError(
+                "Jina embedding HTTP error",
+                details={
+                    "provider": "jina",
+                    "base_url": self.base_url,
+                    "api_url": self.api_url,
+                    "proxy_mode": getattr(self, "_proxy_mode", None),
+                    "proxy_strict": getattr(self, "_proxy_strict", None),
+                    "trust_env": getattr(self, "_trust_env", None),
+                    "proxy_source": getattr(self, "_proxy_source", None),
+                    "proxy_url": getattr(self, "_proxy_url", None),
+                    "proxy_downgraded": getattr(self, "_proxy_downgraded", None),
+                    "status_code": e.response.status_code if e.response else None,
+                    "response_preview": e.response.text[:200] if e.response else None,
+                    "error": str(e),
+                },
+            ) from e
         except Exception as e:
             logger.error(
                 "Jina embedding failed",
@@ -111,7 +239,29 @@ class JinaProvider(BaseAIProvider):
                     "model": model
                 }
             )
-            raise
+            diag = {
+                "provider": "jina",
+                "base_url": self.base_url,
+                "api_url": self.api_url,
+                "proxy_mode": getattr(self, "_proxy_mode", None),
+                "proxy_strict": getattr(self, "_proxy_strict", None),
+                "trust_env": getattr(self, "_trust_env", None),
+                "proxy_source": getattr(self, "_proxy_source", None),
+                "proxy_url": getattr(self, "_proxy_url", None),
+                "proxy_downgraded": getattr(self, "_proxy_downgraded", None),
+                "explicit_proxy_configured": bool(os.getenv("JINA_PROXY")),
+                "system_env_proxy_present": bool(os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("ALL_PROXY")),
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "model": model,
+            }
+            msg = (
+                "Jina embedding failed "
+                f"(provider=jina, base_url={self.base_url}, proxy_mode={diag['proxy_mode']}, "
+                f"trust_env={diag['trust_env']}, proxy_source={diag['proxy_source']}, proxy_url={diag['proxy_url']}). "
+                f"Underlying error: {type(e).__name__}: {str(e)}"
+            )
+            raise JinaEmbeddingError(msg, details=diag) from e
     
     async def chat(
         self,

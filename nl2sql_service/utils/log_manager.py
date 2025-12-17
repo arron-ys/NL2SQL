@@ -8,7 +8,7 @@ import contextvars
 import os
 import sys
 from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, Any, Dict, List, Tuple
 
 from loguru import logger
 
@@ -41,17 +41,83 @@ _CONFIGURED_PID: Optional[int] = None
 # 使用 ContextVar 存储请求 ID，支持异步上下文传递
 request_id_var = contextvars.ContextVar("request_id", default="system")
 
-# ============================================================
-# 日志格式化字符串
-# ============================================================
-# 日志格式：从 extra 字典中读取 request_id
-LOG_FORMAT = (
-    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-    "<level>{level: <8}</level> | "
-    "[{extra[request_id]}] | "
-    "<cyan>{name}:{function}:{line}</cyan> - "
-    "<level>{message}</level>"
+_WHITELIST_LATENCY_FIELDS: Tuple[str, ...] = (
+    "stage1_ms",
+    "stage2_ms",
+    "stage3_ms",
+    "total_ms",
+    "rag_ms",
+    "llm_ms",
 )
+
+
+def _format_kv_pairs(pairs: List[Tuple[str, Any]]) -> str:
+    """将 key/value 对格式化成可读的 k=v。"""
+    rendered = []
+    for k, v in pairs:
+        rendered.append(f"{k}={v}")
+    return ", ".join(rendered)
+
+
+def _info_formatter(record: Dict[str, Any]) -> str:
+    """
+    INFO sink formatter（callable），避免在 format string 里用 {extra[xxx]} 引发 KeyError。
+
+    规则：
+    - 固定字段：time、level、request_id、name:function:line、message
+    - 仅追加白名单耗时字段（存在才显示）
+    - WARNING/ERROR 也走此 formatter（仍只显示白名单，不输出长 extra）
+    """
+    extra = record.get("extra") or {}
+    request_id = extra.get("request_id", "-")
+    base = (
+        f"<green>{record['time']:YYYY-MM-DD HH:mm:ss}</green> | "
+        f"<level>{record['level'].name:<8}</level> | "
+        f"[{request_id}] | "
+        f"<cyan>{record['name']}:{record['function']}:{record['line']}</cyan> - "
+        f"<level>{record['message']}</level>"
+    )
+
+    latency_pairs: List[Tuple[str, Any]] = []
+    for k in _WHITELIST_LATENCY_FIELDS:
+        if k in extra:
+            latency_pairs.append((k, extra.get(k)))
+
+    if latency_pairs:
+        base += " | <dim>" + _format_kv_pairs(latency_pairs) + "</dim>"
+
+    return base + "\n"
+
+
+def _truncate_repr(value: Any, *, limit: int = 300) -> str:
+    """对任意对象做 repr，并安全截断，避免日志爆炸。"""
+    try:
+        s = repr(value)
+    except Exception:
+        s = "<unreprable>"
+    if len(s) <= limit:
+        return s
+    return s[:limit] + "...(truncated)"
+
+
+def _debug_formatter(record: Dict[str, Any]) -> str:
+    """
+    DEBUG sink formatter（callable）：
+    - 追加“截断版 extra”（repr + try/except + 300 字符截断）
+    - 不递归遍历结构
+    """
+    extra = record.get("extra") or {}
+    request_id = extra.get("request_id", "-")
+    base = (
+        f"<green>{record['time']:YYYY-MM-DD HH:mm:ss}</green> | "
+        f"<level>{record['level'].name:<8}</level> | "
+        f"[{request_id}] | "
+        f"<cyan>{record['name']}:{record['function']}:{record['line']}</cyan> - "
+        f"<level>{record['message']}</level>"
+    )
+    # DEBUG 行尾输出截断版 extra（仍可能很大，必须截断）
+    base += " | <dim>extra=" + _truncate_repr(extra, limit=300) + "</dim>"
+    return base + "\n"
 
 # ============================================================
 # 核心配置函数
@@ -109,18 +175,31 @@ def configure_logger():
             record["extra"]["request_id"] = request_id_var.get()
         return True  # 返回 True 表示不过滤这条日志
     
-    # 添加自定义格式的 handler，输出到 stdout
-    # 使用 filter 参数在 handler 级别注入 request_id
-    # 注意：loguru 的 add() 方法不支持 encoding 参数，编码由 sys.stdout 的编码决定
-    # 我们已经在模块开头设置了 sys.stdout 的编码为 UTF-8
+    # INFO sink：始终存在
+    # - level=LOG_LEVEL（INFO/WARNING/ERROR/...）
+    # - formatter 使用 callable，且仅输出白名单耗时字段
     logger.add(
         sys.stdout,
-        format=LOG_FORMAT,
-        filter=inject_request_id,  # 使用 filter 在 handler 级别注入
-        level=log_level,  # 使用从环境变量读取的日志级别
-        colorize=True,
-        enqueue=True,  # 支持多进程/多线程安全
+        format=_info_formatter,
+        filter=inject_request_id,
+        level=log_level,
+        colorize=True,  # callable formatter 输出 loguru 标记，启用颜色
+        enqueue=True,
     )
+
+    # DEBUG sink：仅当 LOG_LEVEL=DEBUG 时启用（且只接收 DEBUG，避免重复打印）
+    if log_level == "DEBUG":
+        def _debug_only(record: Dict[str, Any]) -> bool:
+            return record.get("level").name == "DEBUG"
+
+        logger.add(
+            sys.stdout,
+            format=_debug_formatter,
+            filter=lambda record: inject_request_id(record) and _debug_only(record),
+            level="DEBUG",
+            colorize=True,
+            enqueue=True,
+        )
     
     # 打印配置信息（此时 request_id 应为默认值 "system"）
     logger.info("Logger configured: level={}", log_level)

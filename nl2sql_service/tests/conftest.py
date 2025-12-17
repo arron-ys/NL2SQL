@@ -32,9 +32,13 @@ path_marker_map = {
     "test_validation.py": ["unit"],
     "test_registry.py": ["unit"],
     "test_ai_client.py": ["unit"],
+    "test_jina_proxy_and_stage2_vector_required.py": ["unit"],
     "test_logger_and_middleware.py": ["unit"],
     "test_qdrant_init_clients.py": ["unit"],
     "test_plan_api.py": ["integration"],
+    "test_plan_error_response.py": ["integration"],
+    "test_execute_error_response.py": ["integration"],
+    "test_execute_error_response_debug.py": ["integration"],
     "test_plan_regression.py": ["regression", "integration"],
     "test_e2e_pipeline.py": ["e2e"],
     "test_security.py": ["security"],
@@ -42,6 +46,7 @@ path_marker_map = {
     "test_observability.py": ["observability"],
     "test_performance_internal.py": ["performance"],  # 内部性能测试（Mock 版）
     "test_quality_evaluation.py": ["quality", "slow"],
+    "test_stage2_plan_normalization.py": ["unit"],
     # Live 测试文件（使用完整相对路径避免冲突）
     "live/test_performance_live.py": ["performance", "slow", "live"],
     "live/test_e2e_live.py": ["e2e", "slow", "live"],

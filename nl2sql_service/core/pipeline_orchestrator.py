@@ -43,6 +43,11 @@ def _map_exception_to_pipeline_error(exception: Exception, stage: str) -> Pipeli
     """
     # 确定错误代码
     error_code = "UNKNOWN_ERROR"
+
+    # 优先使用异常自身的稳定 code（用于 Stage3/语义配置类错误对齐 Stage6）
+    if hasattr(exception, "code") and getattr(exception, "code"):
+        error_code = getattr(exception, "code")
+        return PipelineError(stage=stage, code=error_code, message=str(exception))
     
     if isinstance(exception, PermissionDeniedError):
         error_code = "PERMISSION_DENIED"

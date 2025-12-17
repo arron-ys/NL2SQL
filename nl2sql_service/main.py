@@ -7,6 +7,7 @@ NL2SQL 服务的 FastAPI 入口点，连接所有组件形成可运行的 Web �
 """
 import os
 import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -39,6 +40,7 @@ from pydantic import BaseModel, Field
 from core.db_connector import close_all
 from core.pipeline_orchestrator import run_pipeline
 from core.semantic_registry import SemanticRegistry
+from core.errors import AppError, sanitize_details
 from schemas.answer import FinalAnswer
 from schemas.error import PipelineError
 from schemas.plan import QueryPlan
@@ -49,6 +51,7 @@ from stages import stage3_validation
 from stages import stage4_sql_gen
 from stages import stage6_answer
 from utils.log_manager import get_logger, set_request_id
+from utils.log_manager import get_request_id
 from core.semantic_registry import SecurityConfigError, SecurityPolicyNotFound
 from core.ai_client import AIProviderInitError
 
@@ -88,6 +91,9 @@ async def lifespan(app: FastAPI):
             "Semantic registry initialized successfully",
             extra={"yaml_path": yaml_path}
         )
+
+        # 服务启动完成提示（便于前端/运维快速定位启动状态）
+        logger.info("【服务已经完全启动，等待前端发送请求】")
     except Exception as e:
         logger.error(
             "Failed to initialize semantic registry",
@@ -327,14 +333,13 @@ async def security_config_error_handler(request: Request, exc: SecurityConfigErr
     """
     RBAC 配置加载/解析失败 => 500 配置错误（不要伪装成 403）
     """
-    logger.error(
+    logger.opt(exception=exc).error(
         "Security config error",
         extra={
             "error_stage": "SECURITY",
             "path": request.url.path,
             "error_type": type(exc).__name__,
         },
-        exc_info=True,
     )
     error_response = ErrorResponse(
         status="error",
@@ -355,7 +360,7 @@ async def ai_provider_init_error_handler(request: Request, exc: AIProviderInitEr
     """
     LLM Provider 初始化失败（通常是代理/网络/配置问题）=> 503（服务暂不可用）
     """
-    logger.error(
+    logger.opt(exception=exc).error(
         "LLM provider initialization failed",
         extra={
             "error_stage": "LLM",
@@ -363,7 +368,6 @@ async def ai_provider_init_error_handler(request: Request, exc: AIProviderInitEr
             "provider": getattr(exc, "provider_name", None),
             "error_type": type(exc).__name__,
         },
-        exc_info=True,
     )
     error_response = ErrorResponse(
         status="error",
@@ -379,6 +383,29 @@ async def ai_provider_init_error_handler(request: Request, exc: AIProviderInitEr
     )
 
 
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError):
+    """
+    统一 AppError 响应结构（不改变 status_code 语义，只增强 body）。
+    """
+    rid = get_request_id()
+    error_obj = {
+        "code": exc.code,
+        "message": exc.message,
+    }
+    safe_details = sanitize_details(getattr(exc, "details", None))
+    if safe_details:
+        error_obj["details"] = safe_details
+    return JSONResponse(
+        status_code=getattr(exc, "status_code", status.HTTP_500_INTERNAL_SERVER_ERROR),
+        content={
+            "request_id": rid,
+            "error_stage": getattr(exc, "error_stage", "UNKNOWN"),
+            "error": error_obj,
+        },
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
@@ -386,14 +413,13 @@ async def global_exception_handler(request: Request, exc: Exception):
     
     捕获未预期的异常并转换为标准化的错误响应。
     """
-    logger.error(
+    logger.opt(exception=exc).error(
         "Unhandled exception occurred",
         extra={
             "error": str(exc),
             "error_type": type(exc).__name__,
-            "path": request.url.path
+            "path": request.url.path,
         },
-        exc_info=True
     )
     
     # 尝试从异常中提取信息
@@ -566,22 +592,30 @@ async def execute_nl2sql(
         
         return final_answer
     
+    except AppError:
+        # AppError 必须自然传播，交给 app_error_handler 输出统一结构
+        raise
     except Exception as e:
-        logger.error(
+        logger.opt(exception=e).error(
             "NL2SQL request failed",
             extra={
                 "error": str(e),
-                "error_type": type(e).__name__
+                "error_type": type(e).__name__,
             },
-            exc_info=True
         )
         # 让特定异常自然传播，由全局异常处理器捕获（避免破坏错误结构/状态码）
         if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError)):
             raise
-        # 其他异常保持原有行为：返回 detail（兼容现有测试契约）
-        raise HTTPException(
+        # 未知异常：包装成 AppError（不改变 status code=500），走统一结构
+        raise AppError(
+            code="INTERNAL_ERROR",
+            message="Internal server error",
+            error_stage="UNKNOWN",
+            details={
+                "error_type": type(e).__name__,
+                "error_summary": str(e),
+            },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
         ) from e
 
 
@@ -606,6 +640,7 @@ async def generate_plan(
     Raises:
         HTTPException: 当处理失败时抛出
     """
+    api_start = time.perf_counter()
     logger.info(
         "Received plan generation request",
         extra={
@@ -622,12 +657,14 @@ async def generate_plan(
             raise RuntimeError("Semantic registry not initialized")
         
         # Stage 1: Query Decomposition
+        stage1_start = time.perf_counter()
         query_desc = await stage1_decomposition.process_request(
             question=request.question,
             user_id=request.user_id,
             role_id=request.role_id,
             tenant_id=request.tenant_id
         )
+        stage1_ms = int((time.perf_counter() - stage1_start) * 1000)
         
         # 获取当前请求 ID（由 middleware 或 Stage 1 设置）
         actual_request_id = query_desc.request_context.request_id
@@ -637,8 +674,16 @@ async def generate_plan(
             extra={
                 "request_id": actual_request_id,
                 "sub_query_count": len(query_desc.sub_queries),
-                "sub_queries": [{"id": sq.id, "description": sq.description} for sq in query_desc.sub_queries]
+                "stage1_ms": stage1_ms,
             }
+        )
+        # DEBUG：子查询明细（长文本/列表禁止在 INFO）
+        logger.debug(
+            "Stage 1 sub-queries (details)",
+            extra={
+                "request_id": actual_request_id,
+                "sub_queries": [{"id": sq.id, "description": sq.description} for sq in query_desc.sub_queries],
+            },
         )
         
         # 检查是否有子查询
@@ -651,7 +696,7 @@ async def generate_plan(
         # 简化逻辑：只处理第一个子查询
         first_sub_query = query_desc.sub_queries[0]
         
-        logger.info(
+        logger.debug(
             "Processing first sub-query for plan generation",
             extra={
                 "request_id": actual_request_id,
@@ -661,26 +706,31 @@ async def generate_plan(
         )
         
         # Stage 2: Plan Generation
+        stage2_start = time.perf_counter()
         plan = await stage2_plan_generation.process_subquery(
             sub_query=first_sub_query,
             context=query_desc.request_context,
             registry=registry
         )
+        stage2_ms = int((time.perf_counter() - stage2_start) * 1000)
         
         logger.info(
             "Stage 2 completed",
             extra={
                 "request_id": actual_request_id,
-                "intent": plan.intent.value
+                "intent": plan.intent.value,
+                "stage2_ms": stage2_ms,
             }
         )
         
         # Stage 3: Validation
+        stage3_start = time.perf_counter()
         validated_plan = await stage3_validation.validate_and_normalize_plan(
             plan=plan,
             context=query_desc.request_context,
             registry=registry
         )
+        stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
         
         logger.info(
             "Plan generation completed successfully",
@@ -690,6 +740,15 @@ async def generate_plan(
                 "metrics_count": len(validated_plan.metrics),
                 "dimensions_count": len(validated_plan.dimensions),
                 "filters_count": len(validated_plan.filters),
+                "stage3_ms": stage3_ms,
+                "total_ms": int((time.perf_counter() - api_start) * 1000),
+            }
+        )
+        # DEBUG：完整最终计划（INFO 严禁完整 JSON）
+        logger.debug(
+            "Plan generation completed (final_plan details)",
+            extra={
+                "request_id": actual_request_id,
                 "final_plan": {
                     "intent": validated_plan.intent.value,
                     "metrics": [{"id": m.id, "compare_mode": m.compare_mode.value if m.compare_mode else None} for m in validated_plan.metrics],
@@ -697,9 +756,10 @@ async def generate_plan(
                     "filters": [{"id": f.id, "op": f.op.value, "values": f.values} for f in validated_plan.filters],
                     "time_range": validated_plan.time_range.model_dump() if validated_plan.time_range else None,
                     "order_by": [{"id": o.id, "direction": o.direction.value} for o in validated_plan.order_by] if validated_plan.order_by else [],
-                    "limit": validated_plan.limit
-                }
-            }
+                    "limit": validated_plan.limit,
+                    "warnings": validated_plan.warnings if hasattr(validated_plan, "warnings") and validated_plan.warnings else [],
+                },
+            },
         )
         
         return validated_plan
@@ -710,21 +770,29 @@ async def generate_plan(
     except HTTPException:
         # 让 HTTPException 自然传播，由 FastAPI 的异常处理器处理
         raise
+    except AppError:
+        # AppError 必须自然传播，交给 app_error_handler 输出统一结构
+        raise
     except Exception as e:
-        logger.error(
+        logger.opt(exception=e).error(
             "Plan generation failed",
             extra={
                 "error": str(e),
-                "error_type": type(e).__name__
+                "error_type": type(e).__name__,
             },
-            exc_info=True
         )
         if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError)):
             raise
-        # 异常会被全局异常处理器捕获
-        raise HTTPException(
+        # 未知异常：包装成 AppError（不改变 status code=500），走统一结构
+        raise AppError(
+            code="INTERNAL_ERROR",
+            message="Internal server error",
+            error_stage="UNKNOWN",
+            details={
+                "error_type": type(e).__name__,
+                "error_summary": str(e),
+            },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
         ) from e
 
 
@@ -788,21 +856,29 @@ async def generate_sql_from_plan(
         
         return {"sql": sql}
     
+    except AppError:
+        # AppError 必须自然传播，交给 app_error_handler 输出统一结构
+        raise
     except Exception as e:
-        logger.error(
+        logger.opt(exception=e).error(
             "SQL generation failed",
             extra={
                 "error": str(e),
-                "error_type": type(e).__name__
+                "error_type": type(e).__name__,
             },
-            exc_info=True
         )
         if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError)):
             raise
-        # 异常会被全局异常处理器捕获
-        raise HTTPException(
+        # 未知异常：包装成 AppError（不改变 status code=500），走统一结构
+        raise AppError(
+            code="INTERNAL_ERROR",
+            message="Internal server error",
+            error_stage="STAGE_4_SQL_GENERATION",
+            details={
+                "error_type": type(e).__name__,
+                "error_summary": str(e),
+            },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
         ) from e
 
 

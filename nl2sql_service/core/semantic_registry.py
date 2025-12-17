@@ -49,6 +49,20 @@ class SecurityPolicyNotFound(Exception):
         self.role_id = role_id
 
 
+class SemanticConfigurationError(Exception):
+    """
+    语义配置错误（时间窗口/全局配置等加载后解析失败）。
+
+    需要被上层映射为稳定错误码 CONFIGURATION_ERROR。
+    """
+
+    code = "CONFIGURATION_ERROR"
+
+    def __init__(self, message: str, *, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.details = details or {}
+
+
 class SemanticRegistry:
     """
     语义注册表（单例）
@@ -540,9 +554,38 @@ class SemanticRegistry:
             
             # 确保目录存在
             store_path.mkdir(parents=True, exist_ok=True)
-            
-            self.qdrant_client = AsyncQdrantClient(path=str(store_path))
-            logger.info(f"Initialized Qdrant client in LOCAL mode, storage path: {store_path}")
+
+            # 可选：为开发场景（如 uvicorn --reload 多进程）启用“每进程隔离”存储目录，避免文件锁冲突
+            isolate_per_process = os.getenv("VECTOR_STORE_ISOLATE_PER_PROCESS", "").lower() in {"1", "true", "yes", "on"}
+            if isolate_per_process:
+                store_path = store_path / f"instance_{os.getpid()}"
+                store_path.mkdir(parents=True, exist_ok=True)
+
+            try:
+                self.qdrant_client = AsyncQdrantClient(path=str(store_path))
+                logger.info(f"Initialized Qdrant client in LOCAL mode, storage path: {store_path}")
+            except Exception as e:
+                # Windows + local Qdrant：当同一路径被另一个进程（如 reloader/旧进程）占用时会报：
+                # "already accessed by another instance" / portalocker AlreadyLocked
+                msg = str(e)
+                lock_like = ("already accessed by another instance" in msg.lower()) or ("alreadylocked" in msg.lower())
+                if not lock_like:
+                    raise
+
+                # 自动降级：切到每进程隔离目录，尽量保证服务可启动（不影响生产常规单进程场景）
+                fallback_path = (Path(store_path_str) if store_path_str else DEFAULT_STORAGE_PATH) / f"instance_{os.getpid()}"
+                fallback_path.mkdir(parents=True, exist_ok=True)
+                logger.warning(
+                    "Local Qdrant storage path is locked by another process; "
+                    "falling back to per-process storage directory",
+                    extra={
+                        "original_path": str(store_path),
+                        "fallback_path": str(fallback_path),
+                        "error": msg,
+                    },
+                )
+                self.qdrant_client = AsyncQdrantClient(path=str(fallback_path))
+                logger.info(f"Initialized Qdrant client in LOCAL mode (fallback per-process), storage path: {fallback_path}")
     
     async def initialize(self, yaml_path: str = "semantics") -> None:
         """
@@ -834,6 +877,128 @@ class SemanticRegistry:
 
         self._allowed_ids_cache[role_id] = allowed_ids
         return allowed_ids
+
+    # ============================================================
+    # 时间窗口解析（语义配置驱动，禁止硬编码）
+    # ============================================================
+    def resolve_time_window(
+        self,
+        time_window_id: str,
+        time_field_id: Optional[str] = None,
+    ) -> Tuple["TimeRange", str]:
+        """
+        解析 time_window_id 为结构化的 TimeRange，并返回可读描述 time_desc。
+
+        注意：
+        - 仅从语义 YAML 配置（global_config.time_windows）解析，禁止任何硬编码默认值。
+        - 解析失败必须抛 SemanticConfigurationError（code=CONFIGURATION_ERROR）。
+        - time_field_id 目前用于上层做口径冲突检测与日志/提示拼装；TimeRange 本身不携带该字段。
+        """
+        # 延迟导入避免循环依赖（schemas.plan -> core.*）
+        from schemas.plan import TimeRange, TimeRangeType
+
+        if not time_window_id or not isinstance(time_window_id, str):
+            raise SemanticConfigurationError(
+                "Invalid time_window_id (empty or non-string)",
+                details={"time_window_id": time_window_id, "time_field_id": time_field_id},
+            )
+
+        time_windows = []
+        if isinstance(self.global_config, dict):
+            time_windows = self.global_config.get("time_windows", []) or []
+
+        if not isinstance(time_windows, list):
+            raise SemanticConfigurationError(
+                "global_config.time_windows must be a list",
+                details={"time_windows_type": type(time_windows).__name__},
+            )
+
+        tw_def: Optional[Dict[str, Any]] = None
+        for tw in time_windows:
+            if isinstance(tw, dict) and tw.get("id") == time_window_id:
+                tw_def = tw
+                break
+
+        if not tw_def:
+            raise SemanticConfigurationError(
+                f"time_window_id not found in global_config.time_windows: {time_window_id}",
+                details={
+                    "time_window_id": time_window_id,
+                    "time_field_id": time_field_id,
+                    "lookup_path": "global_config.time_windows[*].id",
+                },
+            )
+
+        time_desc = tw_def.get("name") or time_window_id
+        template = tw_def.get("template") if isinstance(tw_def.get("template"), dict) else None
+        if not template:
+            raise SemanticConfigurationError(
+                f"time_window template missing or invalid for id={time_window_id}",
+                details={
+                    "time_window_id": time_window_id,
+                    "lookup_path": "global_config.time_windows[*].template",
+                },
+            )
+
+        tw_type = template.get("type")
+        if tw_type == "LAST_N":
+            value = template.get("value")
+            unit = template.get("unit")
+            if not isinstance(value, int) or value <= 0:
+                raise SemanticConfigurationError(
+                    f"time_window template.value must be positive int for id={time_window_id}",
+                    details={
+                        "time_window_id": time_window_id,
+                        "template": template,
+                    },
+                )
+            if not unit or not isinstance(unit, str):
+                raise SemanticConfigurationError(
+                    f"time_window template.unit must be string for id={time_window_id}",
+                    details={
+                        "time_window_id": time_window_id,
+                        "template": template,
+                    },
+                )
+            return TimeRange(type=TimeRangeType.LAST_N, value=value, unit=unit), time_desc
+
+        if tw_type == "ABSOLUTE":
+            start = template.get("start")
+            end = template.get("end")
+            # 允许只给 end（例如 CURRENT_DATE），但至少要有一个边界
+            if start is None and end is None:
+                raise SemanticConfigurationError(
+                    f"time_window template.start/end both missing for id={time_window_id}",
+                    details={
+                        "time_window_id": time_window_id,
+                        "template": template,
+                    },
+                )
+            if start is not None and not isinstance(start, str):
+                raise SemanticConfigurationError(
+                    f"time_window template.start must be string for id={time_window_id}",
+                    details={
+                        "time_window_id": time_window_id,
+                        "template": template,
+                    },
+                )
+            if end is not None and not isinstance(end, str):
+                raise SemanticConfigurationError(
+                    f"time_window template.end must be string for id={time_window_id}",
+                    details={
+                        "time_window_id": time_window_id,
+                        "template": template,
+                    },
+                )
+            return TimeRange(type=TimeRangeType.ABSOLUTE, start=start, end=end), time_desc
+
+        raise SemanticConfigurationError(
+            f"Unsupported time_window template.type={tw_type} for id={time_window_id}",
+            details={
+                "time_window_id": time_window_id,
+                "template": template,
+            },
+        )
     
     def get_rls_policies(self, role_id: str, entity_id: str) -> List[str]:
         """

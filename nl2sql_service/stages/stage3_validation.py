@@ -4,10 +4,12 @@ Stage 3: Validation and Normalization (验证与规范化)
 对 Stage 2 生成的 QueryPlan 进行验证、规范化和安全检查。
 对应详细设计文档 3.3 的定义。
 """
+import time
 from typing import Dict, List, Optional, Set, Any
 
 from config.pipeline_config import get_pipeline_config
-from core.semantic_registry import SemanticRegistry
+from core.errors import AppError
+from core.semantic_registry import SemanticRegistry, SemanticConfigurationError
 from schemas.plan import (
     FilterItem,
     FilterOp,
@@ -45,6 +47,36 @@ class UnsupportedMultiFactError(Stage3Error):
     pass
 
 
+class AmbiguousTimeError(AppError):
+    """
+    时间口径不明确（需要 Stage6 追问用户）。
+    """
+
+    def __init__(self, message: str, *, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            code="AMBIGUOUS_TIME",
+            message=message,
+            error_stage="STAGE_3_VALIDATION",
+            details=details or {},
+            status_code=500,
+        )
+
+
+class ConfigurationError(AppError):
+    """
+    系统配置错误（语义配置缺失/不可解析/自相矛盾）。
+    """
+
+    def __init__(self, message: str, *, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            code="CONFIGURATION_ERROR",
+            message=message,
+            error_stage="STAGE_3_VALIDATION",
+            details=details or {},
+            status_code=500,
+        )
+
+
 # ============================================================
 # 辅助函数
 # ============================================================
@@ -54,96 +86,208 @@ def _get_default_time_range(
     context: RequestContext
 ) -> TimeRange:
     """
-    获取默认时间范围
-    
+    兼容旧入口：此函数不再允许硬编码默认时间。
+
+    新设计已迁移到“Time Window Injection”策略（语义配置驱动 + 冲突检测）。
+    这里保留函数名仅用于最小侵入改造；实际实现会严格依赖语义配置解析。
+    """
+    raise ConfigurationError(
+        "Legacy _get_default_time_range() is no longer supported. "
+        "Time window injection must be driven by semantic configuration only.",
+        details={"metric_id": metric_id},
+    )
+
+
+def _get_global_default_time_window_id(registry: SemanticRegistry) -> Optional[str]:
+    """
+    读取全局默认 time_window_id。
+
+    兼容两种配置形态：
+    - 新：global_config.default_time_window
+    - 旧：global_config.global_settings.default_time_window_id
+    """
+    if not isinstance(registry.global_config, dict):
+        return None
+    if registry.global_config.get("default_time_window"):
+        return registry.global_config.get("default_time_window")
+    return registry.global_config.get("global_settings", {}).get("default_time_window_id")
+
+
+def _infer_time_field_id(metric_id: str, registry: SemanticRegistry) -> Optional[str]:
+    """
+    推断 time_field_id（用于冲突检测与 resolve_time_window 参数对齐）。
     优先级：
-    1. 指标的 default_time.time_range_fallback
-    2. 指标的 default_time.time_window_id（从 time_windows 查找）
-    3. 全局配置的 default_time_window_id
-    4. 硬编码默认值（30天）
-    
-    Args:
-        metric_id: 指标 ID
-        registry: 语义注册表实例
-        context: 请求上下文
-    
-    Returns:
-        TimeRange: 默认时间范围对象
+    1) metric.default_time.time_field_id
+    2) entity.default_time_field_id（metric.entity_id -> entity def）
+    """
+    metric_def = registry.get_metric_def(metric_id) or {}
+    default_time = metric_def.get("default_time") or {}
+    time_field_id = default_time.get("time_field_id")
+    if time_field_id:
+        return time_field_id
+    entity_id = metric_def.get("entity_id")
+    if entity_id:
+        entity_def = registry.get_entity_def(entity_id)
+        if entity_def:
+            return entity_def.get("default_time_field_id")
+    return None
+
+
+def _get_metric_name(metric_id: str, registry: SemanticRegistry) -> str:
+    metric_def = registry.get_metric_def(metric_id) or {}
+    return metric_def.get("name") or metric_id
+
+
+def _compute_metric_time_candidate(
+    metric_id: str,
+    registry: SemanticRegistry,
+) -> Dict[str, Any]:
+    """
+    为单个指标计算候选默认时间（只允许 Level1 -> Level2，禁止硬编码）。
+    返回结构中包含：
+    - metric_id, metric_name
+    - level: "METRIC_DEFAULT" | "GLOBAL_DEFAULT"
+    - time_window_id, time_field_id
+    - time_range (TimeRange) & time_desc（通过 resolve_time_window 得到）
     """
     metric_def = registry.get_metric_def(metric_id)
-    
-    # 尝试从指标的 default_time 获取
-    if metric_def:
-        default_time = metric_def.get("default_time")
-        if default_time:
-            # 优先使用 time_range_fallback
-            time_range_fallback = default_time.get("time_range_fallback")
-            if time_range_fallback:
-                fallback_type = time_range_fallback.get("type")
-                return TimeRange(
-                    type=TimeRangeType.LAST_N if fallback_type == "LAST_N" else TimeRangeType.ABSOLUTE,
-                    value=time_range_fallback.get("value"),
-                    unit=time_range_fallback.get("unit"),
-                    start=time_range_fallback.get("start"),
-                    end=time_range_fallback.get("end")
-                )
-            
-            # 其次使用 time_window_id
-            time_window_id = default_time.get("time_window_id")
-            if time_window_id:
-                # 尝试从 global_config 中查找 time_windows
-                time_windows = registry.global_config.get("time_windows", [])
-                for tw in time_windows:
-                    if tw.get("id") == time_window_id:
-                        template = tw.get("template", {})
-                        tw_type = template.get("type")
-                        if tw_type == "LAST_N":
-                            return TimeRange(
-                                type=TimeRangeType.LAST_N,
-                                value=template.get("value"),
-                                unit=template.get("unit")
-                            )
-                        elif tw_type == "ABSOLUTE":
-                            return TimeRange(
-                                type=TimeRangeType.ABSOLUTE,
-                                start=template.get("start"),
-                                end=template.get("end")
-                            )
-    
-    # 使用全局默认配置
-    global_config = registry.global_config
-    default_time_window_id = global_config.get("global_settings", {}).get("default_time_window_id")
-    
-    if default_time_window_id:
-        # 尝试从 time_windows 查找
-        time_windows = global_config.get("time_windows", [])
-        for tw in time_windows:
-            if tw.get("id") == default_time_window_id:
-                template = tw.get("template", {})
-                tw_type = template.get("type")
-                if tw_type == "LAST_N":
-                    return TimeRange(
-                        type=TimeRangeType.LAST_N,
-                        value=template.get("value"),
-                        unit=template.get("unit")
-                    )
-                elif tw_type == "ABSOLUTE":
-                    return TimeRange(
-                        type=TimeRangeType.ABSOLUTE,
-                        start=template.get("start"),
-                        end=template.get("end")
-                    )
-    
-    # 最终 fallback：使用硬编码的默认值（30天）
-    logger.warning(
-        f"Using hardcoded default time range for metric {metric_id}",
-        extra={"metric_id": metric_id}
-    )
-    return TimeRange(
-        type=TimeRangeType.LAST_N,
-        value=30,
-        unit="DAY"
-    )
+    metric_name = _get_metric_name(metric_id, registry)
+    default_time = metric_def.get("default_time") if isinstance(metric_def, dict) else None
+
+    time_window_id = None
+    level = None
+
+    # Level 1: 指标级默认
+    if isinstance(default_time, dict) and default_time.get("time_window_id"):
+        time_window_id = default_time.get("time_window_id")
+        level = "METRIC_DEFAULT"
+
+    # Level 2: 全局默认
+    if not time_window_id:
+        time_window_id = _get_global_default_time_window_id(registry)
+        if time_window_id:
+            level = "GLOBAL_DEFAULT"
+
+    if not time_window_id:
+        raise ConfigurationError(
+            "No default time_window_id for metric and no global default configured",
+            details={
+                "metric_id": metric_id,
+                "metric_name": metric_name,
+                "missing": [
+                    "metrics[*].default_time.time_window_id",
+                    "global_config.default_time_window (or global_config.global_settings.default_time_window_id)",
+                ],
+            },
+        )
+
+    time_field_id = _infer_time_field_id(metric_id, registry)
+    if level == "GLOBAL_DEFAULT" and not time_field_id:
+        # 语义层无法确定 time_field_id，需要 Stage6 追问口径
+        raise AmbiguousTimeError(
+            "Global default time window requires time_field_id but semantic layer cannot determine it",
+            details={
+                "metric_id": metric_id,
+                "metric_name": metric_name,
+                "time_window_id": time_window_id,
+                "time_field_id": time_field_id,
+            },
+        )
+
+    try:
+        time_range, time_desc = registry.resolve_time_window(time_window_id, time_field_id)
+    except SemanticConfigurationError as e:
+        raise ConfigurationError(
+            f"Failed to resolve time_window_id={time_window_id} for metric={metric_id}: {str(e)}",
+            details={
+                "metric_id": metric_id,
+                "metric_name": metric_name,
+                "time_window_id": time_window_id,
+                "time_field_id": time_field_id,
+                "upstream_error": str(e),
+                "upstream_details": getattr(e, "details", {}),
+            },
+        ) from e
+
+    return {
+        "metric_id": metric_id,
+        "metric_name": metric_name,
+        "level": level,
+        "time_window_id": time_window_id,
+        "time_field_id": time_field_id,
+        "time_range": time_range,
+        "time_desc": time_desc,
+    }
+
+
+def _inject_time_window_if_needed(plan: QueryPlan, plan_dict: Dict[str, Any], registry: SemanticRegistry) -> None:
+    """
+    步骤四 子步骤1：时间窗口补全 Time Window Injection（严格按最终设计 0~4）。
+    """
+    # 0) 用户显式指定 time_range -> 跳过
+    if plan_dict.get("time_range") is not None:
+        return
+    if not plan.metrics:
+        return
+
+    # 3) 多指标冲突检测：仅当 metrics > 1 且用户未指定 time_range 时执行
+    if len(plan.metrics) > 1:
+        candidates = []
+        for m in plan.metrics:
+            candidates.append(_compute_metric_time_candidate(m.id, registry))
+
+        window_ids = {c["time_window_id"] for c in candidates}
+        field_ids = {c["time_field_id"] for c in candidates}
+
+        if len(window_ids) > 1 or len(field_ids) > 1:
+            # 必须抛 AMBIGUOUS_TIME（交给 Stage6 追问用户）
+            conflict_summary = [
+                {
+                    "metric_id": c["metric_id"],
+                    "metric_name": c["metric_name"],
+                    "time_field_id": c["time_field_id"],
+                    "time_window_id": c["time_window_id"],
+                    "time_desc": c["time_desc"],
+                }
+                for c in candidates
+            ]
+            raise AmbiguousTimeError(
+                "Ambiguous default time window across multiple metrics",
+                details={
+                    "metrics": [m.id for m in plan.metrics],
+                    "candidates": conflict_summary,
+                },
+            )
+
+        # 无冲突：继续用主指标注入（但已确认与其他指标一致）
+        primary_metric_id = plan.metrics[0].id
+        primary = next(c for c in candidates if c["metric_id"] == primary_metric_id)
+        plan_dict["time_range"] = primary["time_range"].model_dump()
+
+        # 4) warnings：仅当用户未指定时间而系统做了补全时追加
+        if primary["level"] == "METRIC_DEFAULT":
+            plan_dict["warnings"].append(
+                f"未指定时间，已按主指标 '{primary['metric_name']}' 的默认配置（{primary['time_desc']}）展示数据"
+            )
+        else:
+            plan_dict["warnings"].append(
+                f"未指定时间且指标未配置默认时间，已按系统全局默认（{primary['time_desc']}）展示数据"
+            )
+        return
+
+    # 单指标：按 Level1->Level2 解析并注入
+    primary_metric_id = plan.metrics[0].id
+    primary = _compute_metric_time_candidate(primary_metric_id, registry)
+    plan_dict["time_range"] = primary["time_range"].model_dump()
+
+    if primary["level"] == "METRIC_DEFAULT":
+        plan_dict["warnings"].append(
+            f"未指定时间，已按主指标 '{primary['metric_name']}' 的默认配置（{primary['time_desc']}）展示数据"
+        )
+    else:
+        plan_dict["warnings"].append(
+            f"未指定时间且指标未配置默认时间，已按系统全局默认（{primary['time_desc']}）展示数据"
+        )
 
 
 def _extract_all_ids_from_plan(plan: QueryPlan) -> Set[str]:
@@ -201,6 +345,7 @@ async def validate_and_normalize_plan(
         PermissionDeniedError: 当计划包含未授权的 ID 时
         UnsupportedMultiFactError: 当计划包含多个事实表时
     """
+    stage3_start = time.perf_counter()
     logger.info(
         "Starting Stage 3: Validation and Normalization",
         extra={
@@ -353,15 +498,11 @@ async def validate_and_normalize_plan(
     
     # Checkpoint 4: Normalization & Injection (规范化与注入)
     # Time Window
-    if plan_dict.get("time_range") is None and plan.metrics:
-        # 使用第一个指标的默认时间范围
-        primary_metric_id = plan.metrics[0].id
-        default_time_range = _get_default_time_range(primary_metric_id, registry, context)
-        plan_dict["time_range"] = default_time_range.model_dump()
-        logger.debug(
-            f"Injected default time range from metric {primary_metric_id}",
-            extra={"time_range": plan_dict["time_range"]}
-        )
+    try:
+        _inject_time_window_if_needed(plan, plan_dict, registry)
+    except (AmbiguousTimeError, ConfigurationError):
+        # 按设计：一旦进入 AMBIGUOUS_TIME / CONFIGURATION_ERROR，不写入 time_range，不追加 time 补全 warnings
+        raise
     
     # Mandatory Filters
     existing_filter_ids = {f.id for f in plan.filters}
@@ -414,6 +555,7 @@ async def validate_and_normalize_plan(
     try:
         validated_plan = QueryPlan(**plan_dict)
         
+        stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
         logger.info(
             "Stage 3 completed successfully",
             extra={
@@ -424,6 +566,7 @@ async def validate_and_normalize_plan(
                 "has_time_range": validated_plan.time_range is not None,
                 "limit": validated_plan.limit,
                 "warnings_count": len(validated_plan.warnings),
+                "stage3_ms": stage3_ms,
                 "validated_metrics": [{"id": m.id, "compare_mode": m.compare_mode.value if m.compare_mode else None} for m in validated_plan.metrics],
                 "validated_dimensions": [{"id": d.id, "time_grain": d.time_grain.value if d.time_grain else None} for d in validated_plan.dimensions],
                 "validated_filters": [{"id": f.id, "op": f.op.value, "values": f.values} for f in validated_plan.filters],

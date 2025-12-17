@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.semantic_registry import SemanticConfigurationError
 from schemas.plan import (
     DimensionItem,
     FilterItem,
@@ -24,6 +25,8 @@ from schemas.plan import (
 )
 from schemas.request import RequestContext
 from stages.stage3_validation import (
+    AmbiguousTimeError,
+    ConfigurationError,
     MissingMetricError,
     PermissionDeniedError,
     UnsupportedMultiFactError,
@@ -63,11 +66,58 @@ def mock_registry():
     }
     # 默认兼容性检查返回True
     registry.check_compatibility.return_value = True
-    # 默认全局配置
-    registry.global_config = {
-        "global_settings": {},
-        "time_windows": [],
+    # 默认实体定义（用于 time_field 推断）
+    registry.get_entity_def.return_value = {
+        "id": "ENTITY_ORDER",
+        "default_time_field_id": "ORDER_DATE",
     }
+    # 默认全局配置：提供全局默认时间窗口（避免与 Stage3 时间补全策略冲突）
+    registry.global_config = {
+        "global_settings": {"default_time_window_id": "TIME_DEFAULT_30D"},
+        "time_windows": [
+            {
+                "id": "TIME_DEFAULT_30D",
+                "name": "默认时间窗口（近30天）",
+                "template": {"type": "LAST_N", "value": 30, "unit": "DAY"},
+            },
+            {
+                "id": "TIME_LAST_30D",
+                "name": "最近30天",
+                "template": {"type": "LAST_N", "value": 30, "unit": "DAY"},
+            },
+            {
+                "id": "TIME_AS_OF_TODAY",
+                "name": "当前时点",
+                "template": {"type": "ABSOLUTE", "end": "CURRENT_DATE"},
+            },
+        ],
+    }
+
+    # 为 Stage3 时间注入提供可用的语义解析（模拟 SemanticRegistry.resolve_time_window 行为）
+    def _resolve_time_window_side_effect(time_window_id: str, time_field_id: str = None):
+        for tw in registry.global_config.get("time_windows", []):
+            if tw.get("id") == time_window_id:
+                template = tw.get("template", {})
+                tw_type = template.get("type")
+                if tw_type == "LAST_N":
+                    return TimeRange(
+                        type=TimeRangeType.LAST_N,
+                        value=template.get("value"),
+                        unit=template.get("unit"),
+                    ), (tw.get("name") or time_window_id)
+                if tw_type == "ABSOLUTE":
+                    return TimeRange(
+                        type=TimeRangeType.ABSOLUTE,
+                        start=template.get("start"),
+                        end=template.get("end"),
+                    ), (tw.get("name") or time_window_id)
+        # 模拟语义层解析失败
+        raise SemanticConfigurationError(
+            f"time_window_id not found in global_config.time_windows: {time_window_id}",
+            details={"time_window_id": time_window_id, "time_field_id": time_field_id},
+        )
+
+    registry.resolve_time_window.side_effect = _resolve_time_window_side_effect
     return registry
 
 
@@ -204,7 +254,7 @@ class TestStructuralSanity:
         result = await validate_and_normalize_plan(plan_with_none, mock_context, mock_registry)
         assert result.filters == []
         assert result.order_by == []
-        assert result.warnings == []
+        # warnings 可能包含 time_range 自动补全提示，不作为本用例断言点
 
 
 # ============================================================
@@ -423,27 +473,52 @@ class TestNormalizationAndInjection:
 
     @pytest.mark.asyncio
     @patch("stages.stage3_validation.get_pipeline_config")
-    async def test_injects_default_time_range(
+    async def test_user_specified_time_range_preserved_no_warning(
         self, mock_get_config, mock_registry, mock_context, mock_pipeline_config
     ):
-        """测试注入默认时间范围"""
+        """1) 用户已指定 time_range -> Stage3 不改写，不追加 time 补全 warning"""
         mock_get_config.return_value = mock_pipeline_config
 
-        # 设置指标有默认时间范围
-        def get_metric_def_side_effect(metric_id):
-            return {
-                "id": metric_id,
-                "entity_id": "ENTITY_ORDER",
-                "default_time": {
-                    "time_range_fallback": {
-                        "type": "LAST_N",
-                        "value": 30,
-                        "unit": "day",
-                    }
-                },
-            }
+        existing_time_range = TimeRange(type=TimeRangeType.LAST_N, value=7, unit="day")
+        plan = QueryPlan(
+            intent=PlanIntent.AGG,
+            metrics=[MetricItem(id="METRIC_GMV")],
+            time_range=existing_time_range,
+        )
 
-        mock_registry.get_metric_def.side_effect = get_metric_def_side_effect
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        assert result.time_range is not None
+        assert result.time_range.type == TimeRangeType.LAST_N
+        assert result.time_range.value == 7
+        # 不应添加“未指定时间...”的补全 warning
+        assert not any("未指定时间" in w for w in result.warnings)
+
+    @pytest.mark.asyncio
+    @patch("stages.stage3_validation.get_pipeline_config")
+    async def test_injects_metric_level_default_time_window(
+        self, mock_get_config, mock_registry, mock_context, mock_pipeline_config
+    ):
+        """2) 单指标：metric.default_time.time_window_id + time_field_id 存在 -> 注入成功（指标级默认）"""
+        mock_get_config.return_value = mock_pipeline_config
+
+        mock_registry.get_metric_def.return_value = {
+            "id": "METRIC_GMV",
+            "name": "GMV",
+            "entity_id": "ENT_SALES_ORDER_ITEM",
+            "default_time": {"time_field_id": "ORDER_DATE", "time_window_id": "TIME_LAST_30D"},
+            "default_filters": [],
+        }
+        mock_registry.get_entity_def.return_value = {
+            "id": "ENT_SALES_ORDER_ITEM",
+            "default_time_field_id": "ORDER_DATE",
+        }
+        mock_registry.global_config = {
+            "global_settings": {"default_time_window_id": "TIME_DEFAULT_30D"},
+            "time_windows": [
+                {"id": "TIME_LAST_30D", "name": "最近30天", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
+                {"id": "TIME_DEFAULT_30D", "name": "默认时间窗口（近30天）", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
+            ],
+        }
 
         plan = QueryPlan(
             intent=PlanIntent.AGG,
@@ -456,6 +531,133 @@ class TestNormalizationAndInjection:
         assert result.time_range is not None
         assert result.time_range.type == TimeRangeType.LAST_N
         assert result.time_range.value == 30
+        assert any("未指定时间" in w and "主指标" in w for w in result.warnings)
+        assert any("默认配置" in w for w in result.warnings)
+
+    @pytest.mark.asyncio
+    @patch("stages.stage3_validation.get_pipeline_config")
+    async def test_injects_global_default_time_window_when_metric_missing_default(
+        self, mock_get_config, mock_registry, mock_context, mock_pipeline_config
+    ):
+        """3) 单指标：metric 缺 default_time.window -> 使用 global 默认 -> 注入成功（全局默认）"""
+        mock_get_config.return_value = mock_pipeline_config
+
+        mock_registry.get_metric_def.return_value = {
+            "id": "METRIC_GMV",
+            "name": "GMV",
+            "entity_id": "ENT_SALES_ORDER_ITEM",
+            "default_time": None,
+            "default_filters": [],
+        }
+        mock_registry.get_entity_def.return_value = {
+            "id": "ENT_SALES_ORDER_ITEM",
+            "default_time_field_id": "ORDER_DATE",
+        }
+        mock_registry.global_config = {
+            "global_settings": {"default_time_window_id": "TIME_DEFAULT_30D"},
+            "time_windows": [
+                {"id": "TIME_DEFAULT_30D", "name": "默认时间窗口（近30天）", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
+            ],
+        }
+
+        plan = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+
+        assert result.time_range is not None
+        assert result.time_range.type == TimeRangeType.LAST_N
+        assert result.time_range.value == 30
+        assert any("系统全局默认" in w for w in result.warnings)
+
+    @pytest.mark.asyncio
+    @patch("stages.stage3_validation.get_pipeline_config")
+    async def test_missing_or_invalid_time_window_raises_configuration_error(
+        self, mock_get_config, mock_registry, mock_context, mock_pipeline_config
+    ):
+        """4) Level1/Level2 都缺失或 time_window_id 无效 -> 抛 CONFIGURATION_ERROR"""
+        mock_get_config.return_value = mock_pipeline_config
+
+        # case A: Level1 缺失，Level2 缺失
+        mock_registry.get_metric_def.return_value = {
+            "id": "METRIC_GMV",
+            "name": "GMV",
+            "entity_id": "ENT_SALES_ORDER_ITEM",
+            "default_time": None,
+            "default_filters": [],
+        }
+        mock_registry.get_entity_def.return_value = {"id": "ENT_SALES_ORDER_ITEM", "default_time_field_id": "ORDER_DATE"}
+        mock_registry.global_config = {"global_settings": {}, "time_windows": []}
+
+        plan = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
+        with pytest.raises(ConfigurationError) as exc_info:
+            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        assert getattr(exc_info.value, "code", None) == "CONFIGURATION_ERROR"
+
+        # case B: Level1 命中但 time_window_id 无效
+        mock_registry.get_metric_def.return_value = {
+            "id": "METRIC_GMV",
+            "name": "GMV",
+            "entity_id": "ENT_SALES_ORDER_ITEM",
+            "default_time": {"time_field_id": "ORDER_DATE", "time_window_id": "TIME_NOT_EXIST"},
+            "default_filters": [],
+        }
+        mock_registry.global_config = {"global_settings": {}, "time_windows": []}
+        plan2 = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
+        with pytest.raises(ConfigurationError) as exc_info2:
+            await validate_and_normalize_plan(plan2, mock_context, mock_registry)
+        assert getattr(exc_info2.value, "code", None) == "CONFIGURATION_ERROR"
+        assert "TIME_NOT_EXIST" in str(exc_info2.value)
+
+    @pytest.mark.asyncio
+    @patch("stages.stage3_validation.get_pipeline_config")
+    async def test_multi_metric_conflict_raises_ambiguous_time(
+        self, mock_get_config, mock_registry, mock_context, mock_pipeline_config
+    ):
+        """5) 多指标：time_window_id 或 time_field_id 不一致 -> 抛 AMBIGUOUS_TIME（含摘要）"""
+        mock_get_config.return_value = mock_pipeline_config
+
+        def metric_def_side_effect(metric_id: str):
+            if metric_id == "METRIC_A":
+                return {
+                    "id": "METRIC_A",
+                    "name": "指标A",
+                    "entity_id": "ENTITY_ORDER",
+                    "default_time": {"time_field_id": "ORDER_DATE", "time_window_id": "TIME_LAST_30D"},
+                    "default_filters": [],
+                }
+            if metric_id == "METRIC_B":
+                return {
+                    "id": "METRIC_B",
+                    "name": "指标B",
+                    "entity_id": "ENTITY_ORDER",
+                    "default_time": {"time_field_id": "HIRE_DATE", "time_window_id": "TIME_AS_OF_TODAY"},
+                    "default_filters": [],
+                }
+            return None
+
+        mock_registry.get_metric_def.side_effect = metric_def_side_effect
+        mock_registry.get_entity_def.side_effect = lambda eid: {"id": eid, "default_time_field_id": "ORDER_DATE"}
+        mock_registry.global_config = {
+            "global_settings": {"default_time_window_id": "TIME_DEFAULT_30D"},
+            "time_windows": [
+                {"id": "TIME_LAST_30D", "name": "最近30天", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
+                {"id": "TIME_AS_OF_TODAY", "name": "当前时点", "template": {"type": "ABSOLUTE", "end": "CURRENT_DATE"}},
+            ],
+        }
+        # 通过权限检查
+        mock_registry.get_allowed_ids.return_value = {"METRIC_A", "METRIC_B"}
+
+        plan = QueryPlan(
+            intent=PlanIntent.AGG,
+            metrics=[MetricItem(id="METRIC_A"), MetricItem(id="METRIC_B")],
+            time_range=None,
+        )
+        with pytest.raises(AmbiguousTimeError) as exc_info:
+            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        assert getattr(exc_info.value, "code", None) == "AMBIGUOUS_TIME"
+        msg = str(exc_info.value)
+        assert "Ambiguous" in msg or "ambiguous" in msg.lower()
+        # message 或 details 中至少包含冲突指标 ID
+        assert "METRIC_A" in msg or "METRIC_B" in msg or getattr(exc_info.value, "details", None)
 
     @pytest.mark.asyncio
     @patch("stages.stage3_validation.get_pipeline_config")

@@ -5,6 +5,7 @@ Stage 1: Query Decomposition (查询分解)
 对应详细设计文档 3.1 的定义。
 """
 import json
+import time
 import uuid
 from datetime import date, datetime
 from typing import List, Dict, Any
@@ -73,6 +74,7 @@ async def process_request(
     current_date = date.today()
     current_date_str = current_date.strftime("%Y-%m-%d")
     
+    stage1_start = time.perf_counter()
     logger.info(
         "Starting Stage 1: Query Decomposition",
         extra={
@@ -108,11 +110,22 @@ async def process_request(
     ]
     
     # 调用 LLM
+    llm_start = time.perf_counter()
     try:
         ai_client = get_ai_client()
         parsed_response = await ai_client.generate_decomposition(
             messages=messages,
             temperature=0.0
+        )
+
+        llm_ms = int((time.perf_counter() - llm_start) * 1000)
+        logger.info(
+            "Stage 1 LLM completed",
+            extra={
+                "request_id": request_id,
+                "llm_ms": llm_ms,
+                "prompt_chars": len(formatted_prompt),
+            },
         )
         
         logger.debug(
@@ -120,9 +133,15 @@ async def process_request(
             extra={"response_keys": list(parsed_response.keys())}
         )
     except Exception as e:
-        logger.error(
-            "LLM call failed",
-            extra={"error": str(e)}
+        llm_ms = int((time.perf_counter() - llm_start) * 1000)
+        logger.opt(exception=e).error(
+            "Stage 1 LLM call failed: {}",
+            str(e),
+            extra={
+                "request_id": request_id,
+                "llm_ms": llm_ms,
+                "prompt_chars": len(formatted_prompt),
+            },
         )
         raise Stage1Error(f"Failed to call LLM for query decomposition: {str(e)}") from e
     
@@ -176,7 +195,11 @@ async def process_request(
             raise Stage1Error(f"Sub-query item at index {idx} has empty or invalid 'description'")
     
     logger.info(
-        f"Successfully parsed {len(sub_queries_raw)} sub-queries from LLM response"
+        "Stage 1 parsed sub-queries",
+        extra={
+            "request_id": request_id,
+            "sub_query_count": len(sub_queries_raw),
+        },
     )
     
     # Step 4: Normalize Sub-Queries
@@ -212,24 +235,34 @@ async def process_request(
         sub_queries=normalized_sub_queries
     )
     
-    # 记录每个子查询的详细信息
+    # DEBUG：子查询明细（INFO 禁止长文本/长列表）
     for idx, sub_query in enumerate(normalized_sub_queries):
-        logger.info(
+        logger.debug(
             f"Sub-query {idx + 1}/{len(normalized_sub_queries)}",
             extra={
                 "sub_query_id": sub_query.id,
                 "description": sub_query.description,
-                "request_id": request_id
-            }
+                "request_id": request_id,
+            },
         )
     
+    stage1_ms = int((time.perf_counter() - stage1_start) * 1000)
     logger.info(
         "Stage 1 completed successfully",
         extra={
             "sub_query_count": len(normalized_sub_queries),
             "request_id": request_id,
-            "sub_queries": [{"id": sq.id, "description": sq.description} for sq in normalized_sub_queries]
+            "stage1_ms": stage1_ms,
         }
+    )
+
+    # DEBUG：完整 sub_queries payload
+    logger.debug(
+        "Stage 1 completed successfully (details)",
+        extra={
+            "request_id": request_id,
+            "sub_queries": [{"id": sq.id, "description": sq.description} for sq in normalized_sub_queries],
+        },
     )
     
     return query_request_description
