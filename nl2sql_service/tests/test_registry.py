@@ -4,14 +4,18 @@ Semantic Registry Test Suite
 测试术语查找、权限过滤（Mock测试）。
 重点测试：
 - get_term() 正确性
-- get_allowed_ids() 逻辑（当前返回全部）
+- get_allowed_ids() 逻辑（RBAC 白名单过滤，fail-closed）
 - 权限过滤功能
 """
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.semantic_registry import SemanticRegistry
+from core.semantic_registry import (
+    SecurityConfigError,
+    SecurityPolicyNotFound,
+    SemanticRegistry,
+)
 
 
 # ============================================================
@@ -25,6 +29,7 @@ def mock_registry():
     registry = SemanticRegistry()
     # 模拟 metadata_map
     registry.metadata_map = {
+        # 业务域示例（用于 get_term / compatibility 等基础测试）
         "METRIC_GMV": {
             "id": "METRIC_GMV",
             "type": "METRIC",
@@ -32,6 +37,7 @@ def mock_registry():
             "entity_id": "ENTITY_ORDER",
             "name": "GMV",
             "aliases": ["总交易额", "成交金额"],
+            "domain_id": "SALES",
         },
         "METRIC_REVENUE": {
             "id": "METRIC_REVENUE",
@@ -40,6 +46,7 @@ def mock_registry():
             "entity_id": "ENTITY_ORDER",
             "name": "Revenue",
             "aliases": ["收入"],
+            "domain_id": "SALES",
         },
         "DIM_REGION": {
             "id": "DIM_REGION",
@@ -47,6 +54,7 @@ def mock_registry():
             "entity_id": "ENTITY_ORDER",
             "name": "Region",
             "aliases": ["地区", "区域"],
+            "domain_id": "SALES",
         },
         "DIM_COUNTRY": {
             "id": "DIM_COUNTRY",
@@ -54,11 +62,42 @@ def mock_registry():
             "entity_id": "ENTITY_ORDER",
             "name": "Country",
             "aliases": ["国家"],
+            "domain_id": "SALES",
         },
         "ENTITY_ORDER": {
             "id": "ENTITY_ORDER",
             "type": "ENTITY",
             "name": "Order",
+            "domain_id": "SALES",
+        },
+        # HR 域（允许）
+        "METRIC_HEADCOUNT": {
+            "id": "METRIC_HEADCOUNT",
+            "metric_type": "COUNT",
+            "entity_id": "ENT_EMPLOYEE",
+            "name": "Headcount",
+            "domain_id": "HR",
+            "category": "CORE",
+        },
+        "DIM_DEPARTMENT": {
+            "id": "DIM_DEPARTMENT",
+            "entity_id": "ENT_EMPLOYEE",
+            "name": "Department",
+            "domain_id": "HR",
+        },
+        "ENT_EMPLOYEE": {
+            "id": "ENT_EMPLOYEE",
+            "type": "ENTITY",
+            "name": "Employee",
+            "domain_id": "HR",
+        },
+        # SALES 域（应被拒绝）
+        "METRIC_SALES_GMV": {
+            "id": "METRIC_SALES_GMV",
+            "metric_type": "SUM",
+            "entity_id": "ENT_SALES_ORDER_ITEM",
+            "name": "Sales GMV",
+            "domain_id": "SALES",
         },
     }
     # 模拟 keyword_index
@@ -72,9 +111,27 @@ def mock_registry():
         "地区": ["DIM_REGION"],
         "country": ["DIM_COUNTRY"],
         "国家": ["DIM_COUNTRY"],
+        "headcount": ["METRIC_HEADCOUNT"],
+        "人头": ["METRIC_HEADCOUNT"],
+        "department": ["DIM_DEPARTMENT"],
+        "部门": ["DIM_DEPARTMENT"],
     }
-    # 模拟 security_policies（当前为空，get_allowed_ids 返回全部）
-    registry._security_policies = {}
+    # 模拟 security_policies（包含 role_policies）
+    registry._security_policies = {
+        "role_policies": [
+            {
+                "policy_id": "POLICY_ROLE_HR_HEAD",
+                "role_id": "ROLE_HR_HEAD",
+                "scopes": {
+                    "domain_access": ["HR", "SHARED"],
+                    "entity_scope": ["HR_"],
+                    "metric_scope": ["HR_ALL"],
+                    "dimension_scope": ["HR_"],
+                },
+            }
+        ]
+    }
+    registry._rebuild_security_indexes()
     return registry
 
 
@@ -179,28 +236,36 @@ class TestGetDimensionDef:
 class TestGetAllowedIds:
     """测试 get_allowed_ids() 方法（权限过滤）"""
 
-    def test_get_allowed_ids_returns_all_ids(self, mock_registry):
-        """测试当前实现返回所有ID（无权限限制）"""
-        allowed_ids = mock_registry.get_allowed_ids("ROLE_TEST")
-        # 当前实现返回所有 metadata_map 的键
-        assert len(allowed_ids) == len(mock_registry.metadata_map)
-        assert "METRIC_GMV" in allowed_ids
-        assert "METRIC_REVENUE" in allowed_ids
-        assert "DIM_REGION" in allowed_ids
-        assert "DIM_COUNTRY" in allowed_ids
-        assert "ENTITY_ORDER" in allowed_ids
+    def test_get_allowed_ids_role_hr_head_basic(self, mock_registry):
+        """ROLE_HR_HEAD：允许 HR 域 METRIC/DIM/ENT 白名单"""
+        allowed_ids = mock_registry.get_allowed_ids("ROLE_HR_HEAD")
+        assert "METRIC_HEADCOUNT" in allowed_ids
+        assert "DIM_DEPARTMENT" in allowed_ids
+        assert "ENT_EMPLOYEE" in allowed_ids
 
     def test_get_allowed_ids_returns_set(self, mock_registry):
         """测试返回类型为 Set"""
-        allowed_ids = mock_registry.get_allowed_ids("ROLE_TEST")
+        allowed_ids = mock_registry.get_allowed_ids("ROLE_HR_HEAD")
         assert isinstance(allowed_ids, set)
 
-    def test_get_allowed_ids_different_roles_same_result(self, mock_registry):
-        """测试不同角色返回相同结果（当前实现）"""
-        ids_role1 = mock_registry.get_allowed_ids("ROLE_HR_HEAD")
-        ids_role2 = mock_registry.get_allowed_ids("ROLE_FINANCE")
-        # 当前实现不区分角色，返回全部
-        assert ids_role1 == ids_role2
+    def test_get_allowed_ids_role_not_found_fail_closed(self, mock_registry):
+        """role_id 未配置 policy：fail-closed 直接抛 403 映射用异常"""
+        with pytest.raises(SecurityPolicyNotFound):
+            mock_registry.get_allowed_ids("ROLE_NOT_EXIST")
+
+    def test_get_allowed_ids_excludes_non_hr_domain_metric(self, mock_registry):
+        """ROLE_HR_HEAD：不应包含非 HR 域指标"""
+        allowed_ids = mock_registry.get_allowed_ids("ROLE_HR_HEAD")
+        assert "METRIC_SALES_GMV" not in allowed_ids
+
+    def test_get_allowed_ids_missing_security_config_is_500(self):
+        """security 配置缺失：应视为配置错误（500），而不是返回全量"""
+        registry = SemanticRegistry()
+        registry.metadata_map = {"METRIC_HEADCOUNT": {"id": "METRIC_HEADCOUNT", "domain_id": "HR"}}
+        registry._security_policies = {}
+        registry._rebuild_security_indexes()
+        with pytest.raises(SecurityConfigError):
+            registry.get_allowed_ids("ROLE_HR_HEAD")
 
 
 # ============================================================
@@ -262,14 +327,15 @@ class TestPermissionFiltering:
 
     def test_filter_ids_by_permission(self, mock_registry):
         """测试根据权限过滤ID列表"""
-        all_ids = ["METRIC_GMV", "METRIC_REVENUE", "DIM_REGION", "DIM_COUNTRY"]
-        allowed_ids = mock_registry.get_allowed_ids("ROLE_TEST")
+        all_ids = ["METRIC_HEADCOUNT", "DIM_DEPARTMENT", "METRIC_SALES_GMV"]
+        allowed_ids = mock_registry.get_allowed_ids("ROLE_HR_HEAD")
 
         # 过滤：只保留允许的ID
         filtered_ids = [id for id in all_ids if id in allowed_ids]
 
-        # 当前实现返回全部，所以所有ID都应该通过
-        assert len(filtered_ids) == len(all_ids)
+        assert "METRIC_HEADCOUNT" in filtered_ids
+        assert "DIM_DEPARTMENT" in filtered_ids
+        assert "METRIC_SALES_GMV" not in filtered_ids
 
     @patch.object(SemanticRegistry, "get_allowed_ids")
     def test_permission_filtering_with_mock(self, mock_get_allowed_ids, mock_registry):

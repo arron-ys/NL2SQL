@@ -6,10 +6,25 @@ NL2SQL 服务的 FastAPI 入口点，连接所有组件形成可运行的 Web �
 对应详细设计文档 Section 5 的定义。
 """
 import os
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional, Union
+
+# ============================================================
+# 设置 UTF-8 编码（修复中文乱码问题）
+# ============================================================
+if sys.platform == "win32":
+    # Windows 系统需要设置控制台编码为 UTF-8
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8')
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+    except Exception:
+        pass
 
 # 在导入其他模块之前，先加载 .env 文件
 # 这样 os.getenv() 才能读取到 .env 文件中的环境变量
@@ -34,6 +49,8 @@ from stages import stage3_validation
 from stages import stage4_sql_gen
 from stages import stage6_answer
 from utils.log_manager import get_logger, set_request_id
+from core.semantic_registry import SecurityConfigError, SecurityPolicyNotFound
+from core.ai_client import AIProviderInitError
 
 logger = get_logger(__name__)
 
@@ -277,6 +294,91 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+@app.exception_handler(SecurityPolicyNotFound)
+async def security_policy_not_found_handler(request: Request, exc: SecurityPolicyNotFound):
+    """
+    RBAC fail-closed：role 未配置 policy => 403
+    """
+    logger.warning(
+        "Security policy not found (RBAC fail-closed)",
+        extra={
+            "error_stage": "SECURITY",
+            "path": request.url.path,
+            "role_id": getattr(exc, "role_id", None),
+            "error_type": type(exc).__name__,
+        },
+    )
+    error_response = ErrorResponse(
+        status="error",
+        error={
+            "stage": "SECURITY",
+            "code": "SECURITY_POLICY_NOT_FOUND",
+            "message": str(exc),
+        },
+    )
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content=error_response.model_dump(),
+    )
+
+
+@app.exception_handler(SecurityConfigError)
+async def security_config_error_handler(request: Request, exc: SecurityConfigError):
+    """
+    RBAC 配置加载/解析失败 => 500 配置错误（不要伪装成 403）
+    """
+    logger.error(
+        "Security config error",
+        extra={
+            "error_stage": "SECURITY",
+            "path": request.url.path,
+            "error_type": type(exc).__name__,
+        },
+        exc_info=True,
+    )
+    error_response = ErrorResponse(
+        status="error",
+        error={
+            "stage": "SECURITY",
+            "code": "SECURITY_CONFIG_ERROR",
+            "message": str(exc),
+        },
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content=error_response.model_dump(),
+    )
+
+
+@app.exception_handler(AIProviderInitError)
+async def ai_provider_init_error_handler(request: Request, exc: AIProviderInitError):
+    """
+    LLM Provider 初始化失败（通常是代理/网络/配置问题）=> 503（服务暂不可用）
+    """
+    logger.error(
+        "LLM provider initialization failed",
+        extra={
+            "error_stage": "LLM",
+            "path": request.url.path,
+            "provider": getattr(exc, "provider_name", None),
+            "error_type": type(exc).__name__,
+        },
+        exc_info=True,
+    )
+    error_response = ErrorResponse(
+        status="error",
+        error={
+            "stage": "LLM",
+            "code": "LLM_PROVIDER_INIT_FAILED",
+            "message": str(exc),
+        },
+    )
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=error_response.model_dump(),
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
@@ -473,7 +575,10 @@ async def execute_nl2sql(
             },
             exc_info=True
         )
-        # 异常会被全局异常处理器捕获
+        # 让特定异常自然传播，由全局异常处理器捕获（避免破坏错误结构/状态码）
+        if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError)):
+            raise
+        # 其他异常保持原有行为：返回 detail（兼容现有测试契约）
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal server error: {str(e)}"
@@ -614,6 +719,8 @@ async def generate_plan(
             },
             exc_info=True
         )
+        if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError)):
+            raise
         # 异常会被全局异常处理器捕获
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -690,6 +797,8 @@ async def generate_sql_from_plan(
             },
             exc_info=True
         )
+        if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError)):
+            raise
         # 异常会被全局异常处理器捕获
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

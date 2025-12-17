@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from core.semantic_registry import SecurityPolicyNotFound
 from main import app
 
 
@@ -109,6 +110,51 @@ class TestPermissionBypass:
 
             # 应该被拒绝或返回错误
             assert response.status_code in [403, 400, 500]
+
+    @pytest.mark.asyncio
+    @pytest.mark.security
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    async def test_security_policy_not_found_mapped_to_403(
+        self,
+        mock_process_subquery,
+        mock_process_request,
+        client,
+        mock_registry,
+    ):
+        """role_id 未配置 policy：应由全局异常处理器映射为 403（fail-closed）"""
+        import main
+        from datetime import date
+
+        # patch registry（避免 initialize 依赖）
+        with patch.object(main, "registry", mock_registry):
+            mock_process_request.return_value = MagicMock(
+                request_context=MagicMock(
+                    user_id="user_001",
+                    role_id="ROLE_NOT_EXIST",
+                    tenant_id="tenant_001",
+                    request_id="test_request_security_policy_403",
+                    current_date=date(2024, 1, 15),
+                ),
+                sub_queries=[MagicMock(id="sq_1", description="测试问题")],
+            )
+            mock_process_subquery.side_effect = SecurityPolicyNotFound("ROLE_NOT_EXIST")
+
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "测试问题",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_NOT_EXIST",
+                    "tenant_id": "tenant_001",
+                },
+            )
+
+            assert response.status_code == 403
+            data = response.json()
+            assert data["status"] == "error"
+            assert data["error"]["stage"] == "SECURITY"
+            assert data["error"]["code"] == "SECURITY_POLICY_NOT_FOUND"
 
 
 # ============================================================

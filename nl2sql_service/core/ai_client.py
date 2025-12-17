@@ -20,6 +20,15 @@ PROVIDER_TYPE_MAP = {
 }
 
 
+class AIProviderInitError(Exception):
+    """AI Provider 初始化失败（用于快速定位/对外映射 503）。"""
+
+    def __init__(self, provider_name: str, reason: str):
+        super().__init__(f"Failed to initialize provider '{provider_name}': {reason}")
+        self.provider_name = provider_name
+        self.reason = reason
+
+
 class AIClient:
     """
     统一 AI 客户端
@@ -209,6 +218,20 @@ class AIClient:
     def _init_providers(self) -> None:
         """初始化所有提供商实例（支持动态 provider 配置）"""
         providers_config = self.config.get("providers", {})
+
+        # 计算“必须可用”的 provider：被 model_mapping 引用的 provider + default_provider
+        required_providers = set()
+        try:
+            model_mapping = self.config.get("model_mapping", {}) or {}
+            for _, mapping in model_mapping.items():
+                if isinstance(mapping, dict) and mapping.get("provider"):
+                    required_providers.add(str(mapping["provider"]))
+            default_provider = self.config.get("default_provider")
+            if default_provider:
+                required_providers.add(str(default_provider))
+        except Exception:
+            # 计算 required_providers 失败不应阻断初始化；后续 _resolve_model 会兜底报错
+            required_providers = set()
         
         # 动态遍历所有 provider 配置
         for provider_name, provider_config in providers_config.items():
@@ -271,6 +294,8 @@ class AIClient:
                     # 注意：超时配置会在 OpenAIProvider 内部处理，这里不需要显式传递
                     # 代理配置：从环境变量或配置中读取
                     init_kwargs["proxy"] = provider_config.get("proxy")
+                    # 传递 provider_name，用于 proxy env 分流（OPENAI_PROXY/DEEPSEEK_PROXY/QWEN_PROXY）
+                    init_kwargs["provider_name"] = provider_name
                     # timeout 参数会在 OpenAIProvider.__init__ 中从环境变量读取，不需要在这里传递
                 
                 logger.info(
@@ -299,6 +324,9 @@ class AIClient:
                     },
                     exc_info=True
                 )
+                # 如果该 provider 是关键路径（会被路由使用），则直接 fail-fast 抛出明确异常
+                if provider_name in required_providers:
+                    raise AIProviderInitError(provider_name=provider_name, reason=str(e)) from e
                 continue
     
     def _resolve_model(self, usage_key: str) -> Tuple[BaseAIProvider, str]:

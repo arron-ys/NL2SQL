@@ -43,6 +43,12 @@ jobs:
           python -m pip install -U pip wheel
           pip install -r requirements.txt
 
+      - name: Check .env.example is up to date
+        env:
+          PYTHONPATH: ${{ github.workspace }}/nl2sql_service
+        run: |
+          python scripts/check_env_example_sync.py
+
       - name: Run Fast Tests (unit + integration)
         env:
           PYTHONPATH: ${{ github.workspace }}/nl2sql_service
@@ -80,6 +86,12 @@ jobs:
         run: |
           python -m pip install -U pip wheel
           pip install -r requirements.txt
+
+      - name: Check .env.example is up to date
+        env:
+          PYTHONPATH: ${{ github.workspace }}/nl2sql_service
+        run: |
+          python scripts/check_env_example_sync.py
 
       - name: Run Full Non-Live Tests
         env:

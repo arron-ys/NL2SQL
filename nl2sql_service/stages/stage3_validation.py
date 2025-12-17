@@ -215,10 +215,46 @@ async def validate_and_normalize_plan(
     
     # Checkpoint 1: Structural Sanity (结构完整性检查)
     # 检查 AGG/TREND 意图是否缺少指标
+    
+    # 详细记录接收到的计划信息（用于调试）
+    logger.debug(
+        "Plan received in Stage 3 validation",
+        extra={
+            "intent": plan.intent.value,
+            "metrics_count": len(plan.metrics),
+            "metrics": [{"id": m.id, "compare_mode": m.compare_mode.value if m.compare_mode else None} for m in plan.metrics],
+            "dimensions_count": len(plan.dimensions),
+            "dimensions": [{"id": d.id, "time_grain": d.time_grain.value if d.time_grain else None} for d in plan.dimensions],
+            "filters_count": len(plan.filters),
+            "filters": [{"id": f.id, "op": f.op.value, "values": f.values} for f in plan.filters],
+            "warnings": plan.warnings if hasattr(plan, 'warnings') and plan.warnings else [],
+        }
+    )
+    
     if plan.intent in [PlanIntent.AGG, PlanIntent.TREND]:
         if not plan.metrics or len(plan.metrics) == 0:
+            # 详细记录为什么缺少 metrics（用于调试）
             logger.error(
-                f"Plan with intent {plan.intent.value} must have at least one metric"
+                f"Plan with intent {plan.intent.value} must have at least one metric",
+                extra={
+                    "intent": plan.intent.value,
+                    "metrics_count": len(plan.metrics) if plan.metrics else 0,
+                    "metrics_list": [m.id for m in plan.metrics] if plan.metrics else [],
+                    "dimensions_count": len(plan.dimensions),
+                    "dimensions": [d.id for d in plan.dimensions],
+                    "filters": [f.id for f in plan.filters],
+                    "warnings": plan.warnings if hasattr(plan, 'warnings') and plan.warnings else [],
+                    # 检查注册表中是否有相关的 metrics
+                    "available_metrics_in_registry": [
+                        term_id for term_id in registry.metadata_map.keys() 
+                        if term_id.startswith("METRIC_")
+                    ][:10],  # 只显示前10个
+                    # 检查注册表中是否有相关的 dimensions（可能有助于理解问题）
+                    "available_dimensions_in_registry": [
+                        term_id for term_id in registry.metadata_map.keys() 
+                        if term_id.startswith("DIM_")
+                    ][:10],  # 只显示前10个
+                }
             )
             raise MissingMetricError(
                 f"Plan with intent {plan.intent.value} must have at least one metric"

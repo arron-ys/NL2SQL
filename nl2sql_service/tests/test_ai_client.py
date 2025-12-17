@@ -66,6 +66,93 @@ def test_init_from_settings_produces_valid_client():
         assert "api.deepseek.com" in str(client._providers["deepseek"].client.base_url)
 
 
+def test_openai_provider_disables_unreachable_proxy(monkeypatch):
+    """
+    配置了不可达代理时应 fail-open 自动禁用，避免本地开发/CI 直接炸掉。
+    """
+    monkeypatch.setenv("PROXY_MODE", "explicit")
+    monkeypatch.setenv("PROXY_STRICT", "0")
+    monkeypatch.setenv("OPENAI_PROXY", "http://127.0.0.1:1")
+    provider = OpenAIProvider(api_key="fake-openai-key", base_url="https://api.openai.com/v1", provider_name="openai")
+    # 不可达代理应被禁用
+    # OpenAIProvider 会记录 has_proxy=False（通过日志），这里验证初始化不抛异常即可
+    assert provider.client is not None
+
+
+def test_openai_provider_strict_proxy_raises(monkeypatch):
+    """严格模式下，代理不可达应直接报错提示启动代理。"""
+    monkeypatch.setenv("PROXY_MODE", "explicit")
+    monkeypatch.setenv("PROXY_STRICT", "1")
+    monkeypatch.setenv("OPENAI_PROXY", "http://127.0.0.1:1")
+    with pytest.raises(ConnectionError):
+        OpenAIProvider(api_key="fake-openai-key", base_url="https://api.openai.com/v1", provider_name="openai")
+
+
+def test_proxy_mode_none_ignores_system_env_proxy(monkeypatch):
+    """
+    系统 env 存在 HTTP_PROXY/HTTPS_PROXY，但 PROXY_MODE=none 时必须 trust_env=False 且不传 proxy。
+    """
+    # 模拟系统代理（根因环境）
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("PROXY_MODE", "none")
+    monkeypatch.setenv("PROXY_STRICT", "0")
+
+    captured = {}
+
+    import httpx
+    real_init = httpx.AsyncClient.__init__
+
+    def _spy_init(self, *args, **kwargs):
+        captured["kwargs"] = dict(kwargs)
+        return real_init(self, *args, **kwargs)
+
+    with patch("httpx.AsyncClient.__init__", new=_spy_init):
+        provider = OpenAIProvider(api_key="fake-openai-key", base_url="https://api.openai.com/v1", provider_name="openai")
+        assert provider.client is not None
+
+    assert captured["kwargs"].get("trust_env") is False
+    assert "proxy" not in captured["kwargs"]
+
+
+def test_unreachable_explicit_proxy_strict_false_downgrades_and_disables_env(monkeypatch):
+    """
+    OPENAI_PROXY 不可达 + strict=false：必须降级直连，并强制 trust_env=False（避免再被 HTTP_PROXY 劫持）。
+    """
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("PROXY_MODE", "explicit")
+    monkeypatch.setenv("PROXY_STRICT", "0")
+    monkeypatch.setenv("OPENAI_PROXY", "http://127.0.0.1:1")
+
+    captured = {}
+    import httpx
+    real_init = httpx.AsyncClient.__init__
+
+    def _spy_init(self, *args, **kwargs):
+        captured["kwargs"] = dict(kwargs)
+        return real_init(self, *args, **kwargs)
+
+    with patch("httpx.AsyncClient.__init__", new=_spy_init):
+        provider = OpenAIProvider(api_key="fake-openai-key", base_url="https://api.openai.com/v1", provider_name="openai")
+        assert provider.client is not None
+
+    assert captured["kwargs"].get("trust_env") is False
+    assert "proxy" not in captured["kwargs"]
+
+
+def test_unreachable_explicit_proxy_strict_true_error_message_contains_proxy(monkeypatch):
+    """OPENAI_PROXY 不可达 + strict=true：错误信息必须包含 proxy_url 与建议。"""
+    monkeypatch.setenv("PROXY_MODE", "explicit")
+    monkeypatch.setenv("PROXY_STRICT", "1")
+    monkeypatch.setenv("OPENAI_PROXY", "http://127.0.0.1:1")
+    with pytest.raises(ConnectionError) as exc:
+        OpenAIProvider(api_key="fake-openai-key", base_url="https://api.openai.com/v1", provider_name="openai")
+    msg = str(exc.value)
+    assert "OPENAI_PROXY" in msg
+    assert "http://127.0.0.1:1" in msg
+
+
 # ============================================================
 # Test Case 2: Usage-Based Routing Logic
 # ============================================================

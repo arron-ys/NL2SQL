@@ -13,6 +13,23 @@ from typing import Optional
 from loguru import logger
 
 # ============================================================
+# 设置控制台编码为 UTF-8（修复中文乱码问题）
+# ============================================================
+if sys.platform == "win32":
+    # Windows 系统需要设置控制台编码为 UTF-8
+    try:
+        # 设置标准输出和标准错误输出为 UTF-8
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8')
+        # 设置环境变量
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+    except Exception:
+        # 如果设置失败，忽略错误（某些环境可能不支持）
+        pass
+
+# ============================================================
 # PID Guard：防止多进程/热重载场景下重复配置
 # ============================================================
 # 记录已配置的进程 ID，确保每个进程只配置一次
@@ -94,6 +111,8 @@ def configure_logger():
     
     # 添加自定义格式的 handler，输出到 stdout
     # 使用 filter 参数在 handler 级别注入 request_id
+    # 注意：loguru 的 add() 方法不支持 encoding 参数，编码由 sys.stdout 的编码决定
+    # 我们已经在模块开头设置了 sys.stdout 的编码为 UTF-8
     logger.add(
         sys.stdout,
         format=LOG_FORMAT,

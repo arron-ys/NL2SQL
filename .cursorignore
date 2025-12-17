@@ -1,0 +1,7 @@
+# Ignore local secrets
+.env
+.env.*
+
+# Allow example template to be tracked/edited
+!.env.example
+!**/.env.example

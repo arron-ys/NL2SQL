@@ -5,6 +5,8 @@ OpenAI Provider Module
 """
 import json
 import os
+import socket
+from urllib.parse import urlparse
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
@@ -29,7 +31,8 @@ class OpenAIProvider(BaseAIProvider):
         api_key: str,
         base_url: Optional[str] = None,
         timeout: Optional[float] = None,
-        proxy: Optional[str] = None
+        proxy: Optional[str] = None,
+        provider_name: str = "openai",
     ):
         """
         初始化 OpenAI 提供商
@@ -38,17 +41,110 @@ class OpenAIProvider(BaseAIProvider):
             api_key: OpenAI API Key
             base_url: OpenAI Base URL，如果为 None 则使用官方 API
             timeout: 超时时间（秒），默认 60 秒
-            proxy: 代理 URL（如 "http://proxy.example.com:8080"），如果为 None 则从环境变量读取
+            proxy: 代理 URL（如 "http://proxy.example.com:8080"），优先级高于环境变量
+            provider_name: provider 名称（openai/deepseek/qwen），用于分流 proxy env
         """
         self.api_key = api_key
         self.base_url = base_url
+        self.provider_name = provider_name
+        self._proxy_mode: str = ""
+        self._proxy_strict: bool = False
+        self._trust_env: bool = False
+        self._proxy_source: str = "none"  # none|explicit|system
+        self._proxy_url: Optional[str] = None
+        self._proxy_downgraded: bool = False
+        self._proxy_disabled_reason: Optional[str] = None
         
-        # 从环境变量读取代理配置（如果未提供）
-        # 优先级：1. 显式传入的 proxy 参数
-        #         2. OPENAI_PROXY 环境变量（推荐，专门用于 OpenAI）
-        #         3. HTTP_PROXY/HTTPS_PROXY 环境变量（向后兼容，系统级代理）
-        if proxy is None:
-            proxy = os.getenv("OPENAI_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("http_proxy") or os.getenv("https_proxy")
+        def _is_proxy_reachable(proxy_url: str) -> bool:
+            """
+            快速探测代理是否可连通（避免因本地代理未启动导致所有请求直接 500）。
+            仅做 TCP 连接探测，不发 HTTP 请求。
+            """
+            try:
+                parsed = urlparse(proxy_url)
+                host = parsed.hostname
+                port = parsed.port
+                if not host or not port:
+                    return True  # 无法解析时不做强判断，保持原行为
+                # 本地代理最常见：127.0.0.1 / localhost
+                with socket.create_connection((host, port), timeout=0.5):
+                    return True
+            except Exception:
+                return False
+
+        # ============================================================
+        # Proxy 统一控制（彻底修复 env proxy 劫持：显式 trust_env=False）
+        #
+        # PROXY_MODE:
+        # - none:     全部禁用代理，trust_env=False
+        # - explicit: 仅使用 provider 专用 proxy（OPENAI_PROXY / DEEPSEEK_PROXY / QWEN_PROXY），trust_env=False
+        # - system:   允许读取 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY（trust_env=True）
+        #
+        # PROXY_STRICT:
+        # - true:  显式 proxy 不可达 => 直接抛清晰错误
+        # - false: 显式 proxy 不可达 => 降级直连，且必须 trust_env=False（避免再次被 env 劫持）
+        #
+        # 兼容旧变量：OPENAI_PROXY_STRICT（等价于 PROXY_STRICT）
+        # ============================================================
+        proxy_mode = (os.getenv("PROXY_MODE") or "explicit").strip().lower()
+        if proxy_mode not in {"none", "explicit", "system"}:
+            proxy_mode = "explicit"
+        proxy_strict_raw = (os.getenv("PROXY_STRICT") or os.getenv("OPENAI_PROXY_STRICT") or "").strip()
+        proxy_strict = proxy_strict_raw in {"1", "true", "TRUE", "yes", "YES"}
+
+        self._proxy_mode = proxy_mode
+        self._proxy_strict = proxy_strict
+        self._trust_env = proxy_mode == "system"
+
+        env_proxy_var = {
+            "openai": "OPENAI_PROXY",
+            "deepseek": "DEEPSEEK_PROXY",
+            "qwen": "QWEN_PROXY",
+        }.get(self.provider_name, "OPENAI_PROXY")
+
+        explicit_proxy = proxy or os.getenv(env_proxy_var)
+
+        if proxy_mode == "none":
+            self._proxy_source = "none"
+            self._proxy_url = None
+        elif proxy_mode == "explicit":
+            self._proxy_source = "explicit" if explicit_proxy else "none"
+            self._proxy_url = explicit_proxy
+        else:  # system
+            # system 模式下，允许 env proxy；但如果显式提供了 provider 专用 proxy，仍按 explicit 处理
+            self._proxy_source = "explicit" if explicit_proxy else "system"
+            self._proxy_url = explicit_proxy
+
+        # 兼容常见开发环境：.env 里配置了本地代理端口，但代理进程未启动
+        # 处理策略：探测不可达则自动禁用代理（fail-open），避免服务直接不可用
+        if self._proxy_source == "explicit" and self._proxy_url:
+            if not _is_proxy_reachable(self._proxy_url):
+                logger.warning(
+                    "Proxy is configured but unreachable",
+                    extra={
+                        "provider": self.provider_name,
+                        "proxy_mode": self._proxy_mode,
+                        "proxy_source": self._proxy_source,
+                        "proxy_url": self._proxy_url,
+                        "proxy_strict": self._proxy_strict,
+                    },
+                )
+                self._proxy_disabled_reason = "unreachable"
+                if self._proxy_strict:
+                    raise ConnectionError(
+                        f"{env_proxy_var} is set but unreachable: {self._proxy_url}. "
+                        f"Start your proxy process or set {env_proxy_var} to the correct port. "
+                        f"(PROXY_MODE={self._proxy_mode}, PROXY_STRICT=true)"
+                    )
+                # strict=false：降级直连，并强制 trust_env=False，避免被系统 env proxy 劫持
+                self._proxy_url = None
+                self._proxy_source = "none"
+                self._trust_env = False
+                self._proxy_downgraded = True
+                logger.warning(
+                    "Proxy unreachable; downgraded to direct connection with trust_env=False",
+                    extra={"provider": self.provider_name},
+                )
         
         # 设置超时时间（优先级：LLM_TIMEOUT > OPENAI_TIMEOUT > 默认值 60.0）
         if timeout is None:
@@ -60,15 +156,31 @@ class OpenAIProvider(BaseAIProvider):
         # 总是创建自定义 HTTP 客户端，以便应用超时和代理设置
         http_client_kwargs = {}
         
-        # 配置代理
-        # httpx.AsyncClient 使用 'proxy' 参数（不是 'proxies'）
-        # 如果 proxy 是字符串，直接传递；如果是字典，也直接传递
-        if proxy:
-            # httpx 支持字符串格式的代理 URL，会自动应用到 http 和 https
-            http_client_kwargs["proxy"] = proxy
-            logger.info(f"Using proxy for OpenAI API: {proxy}")
+        # 配置 trust_env：默认必须禁用系统 env proxy（除非 PROXY_MODE=system）
+        http_client_kwargs["trust_env"] = bool(self._trust_env)
+
+        # 配置代理（只在 proxy_source=explicit 且 proxy_url 存在时传递）
+        if self._proxy_source == "explicit" and self._proxy_url:
+            http_client_kwargs["proxy"] = self._proxy_url
+            logger.info(
+                "Using explicit proxy for provider",
+                extra={
+                    "provider": self.provider_name,
+                    "proxy_source": self._proxy_source,
+                    "proxy_url": self._proxy_url,
+                    "trust_env": self._trust_env,
+                },
+            )
         else:
-            logger.debug("No proxy configured for OpenAI API")
+            logger.info(
+                "No explicit proxy for provider",
+                extra={
+                    "provider": self.provider_name,
+                    "proxy_source": self._proxy_source,
+                    "trust_env": self._trust_env,
+                    "proxy_downgraded": self._proxy_downgraded,
+                },
+            )
         
         # 配置超时（总是设置，确保有合理的超时时间）
         http_timeout = httpx.Timeout(
@@ -95,9 +207,16 @@ class OpenAIProvider(BaseAIProvider):
         logger.info(
             "OpenAIProvider initialized",
             extra={
+                "provider": self.provider_name,
                 "base_url": self.base_url or "default",
                 "timeout": timeout,
-                "has_proxy": bool(proxy)
+                "proxy_mode": self._proxy_mode,
+                "proxy_strict": self._proxy_strict,
+                "trust_env": self._trust_env,
+                "proxy_source": self._proxy_source,
+                "proxy_url": self._proxy_url,
+                "proxy_downgraded": self._proxy_downgraded,
+                "proxy_disabled_reason": self._proxy_disabled_reason,
             }
         )
     
@@ -228,7 +347,15 @@ class OpenAIProvider(BaseAIProvider):
                 "model": model,
                 "has_api_key": bool(self.api_key),
                 "api_key_length": len(self.api_key) if self.api_key else 0,
-                "base_url": self.base_url or "default"
+                "base_url": self.base_url or "default",
+                "provider": self.provider_name,
+                "proxy_mode": self._proxy_mode,
+                "proxy_strict": self._proxy_strict,
+                "trust_env": self._trust_env,
+                "proxy_source": self._proxy_source,
+                "proxy_url": self._proxy_url,
+                "proxy_downgraded": self._proxy_downgraded,
+                "proxy_disabled_reason": self._proxy_disabled_reason,
             }
             
             # OpenAI SDK 的异常通常有这些属性
@@ -261,8 +388,12 @@ class OpenAIProvider(BaseAIProvider):
                             pass
             
             # 输出详细的错误日志
+            # 注意：loguru 使用 str.format 渲染 message，error_msg 可能包含 JSON 花括号，
+            # 直接拼接到 message 会触发 KeyError。这里用占位符传参，避免被误格式化。
             logger.error(
-                f"OpenAI chat JSON completion failed: {error_type} - {error_msg}",
+                "OpenAI chat JSON completion failed: {} - {}",
+                error_type,
+                error_msg,
                 extra=extra_info,
                 exc_info=True
             )
@@ -274,11 +405,20 @@ class OpenAIProvider(BaseAIProvider):
                     extra={
                         "diagnosis": {
                             "1": "Network connectivity issue - check internet connection",
-                            "2": "Proxy required - set HTTP_PROXY or HTTPS_PROXY environment variable",
+                            "2": "Proxy required - set OPENAI_PROXY (preferred) or HTTP_PROXY/HTTPS_PROXY, and ensure proxy process is running",
                             "3": "Firewall blocking - check firewall settings",
                             "4": "DNS resolution failed - check DNS settings",
                             "5": "Timeout too short - increase OPENAI_TIMEOUT environment variable"
-                        }
+                        },
+                        "proxy_state": {
+                            "proxy_mode": self._proxy_mode,
+                            "proxy_strict": self._proxy_strict,
+                            "trust_env": self._trust_env,
+                            "proxy_source": self._proxy_source,
+                            "proxy_url": self._proxy_url,
+                            "proxy_downgraded": self._proxy_downgraded,
+                            "disabled_reason": self._proxy_disabled_reason,
+                        },
                     }
                 )
             

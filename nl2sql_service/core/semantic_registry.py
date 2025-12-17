@@ -37,6 +37,18 @@ FINGERPRINT_KEY = "_system_fingerprint"
 DEFAULT_STORAGE_PATH = Path(__file__).parent.parent.parent / "qdrant_data"
 
 
+class SecurityConfigError(Exception):
+    """安全配置错误（加载/解析失败等），应视为 500 配置错误。"""
+
+
+class SecurityPolicyNotFound(Exception):
+    """角色未配置安全策略（fail-closed），应映射为 403。"""
+
+    def __init__(self, role_id: str):
+        super().__init__(f"Security policy not found for role_id={role_id}")
+        self.role_id = role_id
+
+
 class SemanticRegistry:
     """
     语义注册表（单例）
@@ -65,6 +77,10 @@ class SemanticRegistry:
         
         # 安全策略（从 semantic_security.yaml 加载）
         self._security_policies: Dict[str, Any] = {}
+        # role_id -> policy dict（来自 security.role_policies）
+        self._role_policy_map: Dict[str, Dict[str, Any]] = {}
+        # role_id -> allowed_ids cache
+        self._allowed_ids_cache: Dict[str, Set[str]] = {}
         
         # 当前指纹
         self._current_fingerprint: Optional[str] = None
@@ -207,6 +223,26 @@ class SemanticRegistry:
             except Exception as e:
                 logger.error(f"Error loading YAML file {yaml_file}: {e}")
                 raise
+
+        # 兼容两种写法，并对浅合并后的结果做一次安全配置归一化：
+        # - security: { role_policies: [...] }
+        # - role_policies: [...]
+        # - 两者同时存在时合并 role_policies，避免覆盖丢失
+        try:
+            security = all_data.get("security") if isinstance(all_data.get("security"), dict) else {}
+            top_role_policies = all_data.get("role_policies")
+            if top_role_policies is not None:
+                if "role_policies" in security and isinstance(security.get("role_policies"), list):
+                    if isinstance(top_role_policies, list):
+                        security["role_policies"] = security["role_policies"] + top_role_policies
+                else:
+                    if isinstance(top_role_policies, list):
+                        security["role_policies"] = top_role_policies
+            if security:
+                all_data["security"] = security
+        except Exception as e:
+            # 归一化失败应视为配置错误（不要伪装成 403）
+            raise SecurityConfigError(f"Failed to normalize security config: {e}") from e
         
         return all_data
     
@@ -224,7 +260,8 @@ class SemanticRegistry:
         self.global_config = yaml_data.get("global_config", {})
         
         # 提取安全策略
-        self._security_policies = yaml_data.get("security", {})
+        self._security_policies = yaml_data.get("security", {}) if isinstance(yaml_data.get("security", {}), dict) else {}
+        self._rebuild_security_indexes()
         
         # 处理 metrics
         metrics = yaml_data.get("metrics", [])
@@ -255,6 +292,28 @@ class SemanticRegistry:
             f"Built metadata_map: {len(self.metadata_map)} items, "
             f"keyword_index: {len(self.keyword_index)} entries"
         )
+
+    def _rebuild_security_indexes(self) -> None:
+        """重建安全索引缓存（role_id -> policy）与 allowed_ids 缓存。"""
+        self._role_policy_map.clear()
+        self._allowed_ids_cache.clear()
+
+        role_policies = None
+        if isinstance(self._security_policies, dict):
+            role_policies = self._security_policies.get("role_policies")
+        if role_policies is None:
+            return
+        if not isinstance(role_policies, list):
+            raise SecurityConfigError("security.role_policies must be a list")
+
+        for policy in role_policies:
+            if not isinstance(policy, dict):
+                continue
+            role_id = policy.get("role_id")
+            if not role_id:
+                continue
+            # 同 role_id 多条策略：后者覆盖前者（显式更新更优先）
+            self._role_policy_map[str(role_id)] = policy
     
     def _add_to_keyword_index(self, term_id: str, term_def: Dict[str, Any]) -> None:
         """
@@ -609,10 +668,172 @@ class SemanticRegistry:
         Returns:
             Set[str]: 允许访问的术语 ID 集合
         """
-        # TODO: 从 _security_policies 中读取角色权限
-        # 当前返回所有 ID（无权限限制）
-        logger.warning(f"get_allowed_ids not yet fully implemented for role: {role_id}")
-        return set(self.metadata_map.keys())
+        # fail-closed：安全配置缺失/异常 => 500；role 未配置 => 403
+        if not self._security_policies:
+            raise SecurityConfigError("Security config is not loaded (missing 'security')")
+
+        # 索引为空但配置存在：容错重建一次
+        if not self._role_policy_map:
+            self._rebuild_security_indexes()
+
+        if not self._role_policy_map:
+            raise SecurityConfigError("Security config missing 'role_policies'")
+
+        if role_id in self._allowed_ids_cache:
+            return self._allowed_ids_cache[role_id]
+
+        policy = self._role_policy_map.get(role_id)
+        if not policy:
+            raise SecurityPolicyNotFound(role_id)
+
+        policy_id = policy.get("policy_id")
+        scopes = policy.get("scopes", {}) if isinstance(policy.get("scopes", {}), dict) else {}
+
+        domain_access = set(scopes.get("domain_access", []) or [])
+        entity_scope = scopes.get("entity_scope", []) or []
+        dimension_scope = scopes.get("dimension_scope", []) or []
+        metric_scope = scopes.get("metric_scope", []) or []
+
+        # 统一为字符串列表
+        def _as_str_list(x: Any) -> List[str]:
+            if x is None:
+                return []
+            if isinstance(x, list):
+                return [str(i) for i in x if i is not None]
+            return [str(x)]
+
+        domain_access_list = _as_str_list(list(domain_access))
+        domain_access = set(domain_access_list)
+        entity_scope = _as_str_list(entity_scope)
+        dimension_scope = _as_str_list(dimension_scope)
+        metric_scope = _as_str_list(metric_scope)
+
+        domain_all = "ALL" in domain_access
+
+        def _term_type(term_id: str) -> str:
+            if term_id.startswith("METRIC_"):
+                return "METRIC"
+            if term_id.startswith("DIM_"):
+                return "DIM"
+            if term_id.startswith("ENT_"):
+                return "ENT"
+            return "OTHER"
+
+        def _domain_allowed(term_domain: Optional[str]) -> bool:
+            if domain_all:
+                return True
+            if not term_domain:
+                return False
+            return term_domain in domain_access
+
+        # scope helpers
+        metric_explicit_ids = {s for s in metric_scope if s.startswith("METRIC_")}
+        dim_explicit_ids = {s for s in dimension_scope if s.startswith("DIM_")}
+        ent_explicit_ids = {s for s in entity_scope if s.startswith("ENT_")}
+
+        metric_has_all = "ALL" in metric_scope
+        dim_has_all = "ALL" in dimension_scope
+        ent_has_all = "ALL" in entity_scope
+
+        # 形如 "HR_ALL" / "HR_BASE" / "SALES_ALL" ...
+        metric_domain_rules = {s for s in metric_scope if "_" in s and not s.startswith("METRIC_")}
+        # 形如 "HR_"（以 "_" 结尾）
+        dim_domain_families = {s for s in dimension_scope if s.endswith("_") and not s.startswith("DIM_")}
+        ent_domain_families = {s for s in entity_scope if s.endswith("_") and not s.startswith("ENT_")}
+
+        allowed_ids: Set[str] = set()
+        type_counts = {"METRIC": 0, "DIM": 0, "ENT": 0, "OTHER": 0}
+
+        for term_id, term_def in self.metadata_map.items():
+            if not isinstance(term_id, str):
+                continue
+            if not isinstance(term_def, dict):
+                continue
+
+            ttype = _term_type(term_id)
+            term_domain = term_def.get("domain_id")
+            if not _domain_allowed(term_domain):
+                continue
+
+            allowed = False
+
+            if ttype == "METRIC":
+                if term_id in metric_explicit_ids:
+                    allowed = True
+                elif metric_has_all:
+                    allowed = True
+                else:
+                    # domain 族规则：<DOMAIN>_ALL / <DOMAIN>_BASE
+                    for rule in metric_domain_rules:
+                        parts = rule.split("_", 1)
+                        if len(parts) != 2:
+                            continue
+                        rule_domain, rule_tail = parts[0], parts[1]
+                        if not term_domain or term_domain != rule_domain:
+                            continue
+                        if rule_tail == "ALL":
+                            allowed = True
+                            break
+                        if rule_tail == "BASE":
+                            category = term_def.get("category")
+                            if category is None:
+                                logger.warning(
+                                    "Metric category missing while applying *_BASE rule; allowing to avoid false-deny",
+                                    extra={"term_id": term_id, "role_id": role_id, "policy_id": policy_id},
+                                )
+                                allowed = True
+                                break
+                            if str(category).upper() in {"CORE", "BASE"}:
+                                allowed = True
+                                break
+
+            elif ttype == "DIM":
+                if term_id in dim_explicit_ids:
+                    allowed = True
+                elif dim_has_all:
+                    allowed = True
+                else:
+                    for family in dim_domain_families:
+                        family_domain = family[:-1]  # 去掉尾部 "_"
+                        if term_domain == family_domain:
+                            allowed = True
+                            break
+
+            elif ttype == "ENT":
+                if term_id in ent_explicit_ids:
+                    allowed = True
+                elif ent_has_all:
+                    allowed = True
+                else:
+                    for family in ent_domain_families:
+                        family_domain = family[:-1]
+                        if term_domain == family_domain:
+                            allowed = True
+                            break
+
+            else:
+                # OTHER 类型不在白名单前缀内，默认拒绝（稳定 fail-closed）
+                allowed = False
+
+            if allowed:
+                allowed_ids.add(term_id)
+                type_counts[ttype] = type_counts.get(ttype, 0) + 1
+
+        logger.info(
+            "RBAC allowlist computed",
+            extra={
+                "role_id": role_id,
+                "policy_id": policy_id,
+                "allowed_total": len(allowed_ids),
+                "allowed_metric": type_counts.get("METRIC", 0),
+                "allowed_dim": type_counts.get("DIM", 0),
+                "allowed_ent": type_counts.get("ENT", 0),
+                "allowed_other": type_counts.get("OTHER", 0),
+            },
+        )
+
+        self._allowed_ids_cache[role_id] = allowed_ids
+        return allowed_ids
     
     def get_rls_policies(self, role_id: str, entity_id: str) -> List[str]:
         """
@@ -630,22 +851,62 @@ class SemanticRegistry:
         return []
     
     # ============================================================
-    # 向量搜索方法（异步）
+    # 检索方法（按设计文档 3.2.3 的三步流程）
     # ============================================================
     
-    async def search_similar_terms(
+    def search_by_keyword(
+        self,
+        query: str,
+        allowed_ids: Optional[Set[str]] = None
+    ) -> Set[str]:
+        """
+        步骤一：关键词匹配搜索
+        
+        在 keyword_index 中搜索包含查询文本的术语。
+        使用精确匹配（子串匹配）。
+        
+        Args:
+            query: 查询文本
+            allowed_ids: 允许的 ID 集合（用于权限过滤），如果为 None 则不过滤
+        
+        Returns:
+            Set[str]: 匹配的术语 ID 集合
+        """
+        query_lower = query.lower()
+        matches: Set[str] = set()
+        
+        # 遍历关键词索引
+        for keyword, term_ids in self.keyword_index.items():
+            if keyword.lower() in query_lower:
+                # 添加匹配的术语 ID
+                for term_id in term_ids:
+                    # 权限过滤
+                    if allowed_ids is None or term_id in allowed_ids:
+                        matches.add(term_id)
+        
+        logger.debug(
+            f"Keyword search completed: query='{query}', matches={len(matches)}"
+        )
+        
+        return matches
+    
+    async def search_by_vector(
         self,
         query: str,
         allowed_ids: Optional[List[str]] = None,
-        top_k: int = 20
+        top_k: int = 20,
+        similarity_threshold: float = 0.0
     ) -> List[Tuple[str, float]]:
         """
-        搜索相似的术语（向量搜索）
+        步骤二：向量相似度搜索
+        
+        使用语义嵌入向量进行相似度搜索。
         
         Args:
             query: 查询文本
             allowed_ids: 允许的 ID 列表（用于权限过滤），如果为 None 则不过滤
             top_k: 返回的 top-k 结果数量
+            similarity_threshold: 相似度阈值，低于此值的结果将被过滤
         
         Returns:
             List[Tuple[str, float]]: [(term_id, score), ...] 列表，按相似度降序排列
@@ -670,22 +931,27 @@ class SemanticRegistry:
                 )
             
             # 搜索 Qdrant
-            search_results = await self.qdrant_client.search(
+            # 注意：AsyncQdrantClient 使用 query_points 方法而不是 search 方法
+            # query_points 返回 QueryResponse 对象，结果在 points 属性中
+            search_response = await self.qdrant_client.query_points(
                 collection_name=QDRANT_COLLECTION_NAME,
-                query_vector=query_embedding,
+                query=query_embedding,
                 query_filter=qdrant_filter,
                 limit=top_k
             )
             
-            # 提取结果
+            # 提取结果并应用相似度阈值（QueryResponse.points 是 ScoredPoint 列表）
             results = [
                 (point.payload.get("id"), point.score)
-                for point in search_results
-                if point.payload and "id" in point.payload
+                for point in search_response.points
+                if point.payload 
+                and "id" in point.payload
+                and point.score >= similarity_threshold
             ]
             
             logger.debug(
-                f"Vector search completed: query='{query}', results={len(results)}"
+                f"Vector search completed: query='{query}', "
+                f"results={len(results)} (threshold={similarity_threshold})"
             )
             
             return results
@@ -693,6 +959,75 @@ class SemanticRegistry:
         except Exception as e:
             logger.error(f"Error in vector search: {e}")
             raise
+    
+    def merge_search_results(
+        self,
+        keyword_matches: Set[str],
+        vector_results: List[Tuple[str, float]],
+        max_recall: Optional[int] = None
+    ) -> List[str]:
+        """
+        步骤三：合并和排序搜索结果
+        
+        合并关键词匹配和向量搜索的结果，优先保留关键词匹配的结果。
+        
+        Args:
+            keyword_matches: 关键词匹配的术语 ID 集合
+            vector_results: 向量搜索的结果列表 [(term_id, score), ...]
+            max_recall: 最大召回数量，如果为 None 则不限制
+        
+        Returns:
+            List[str]: 合并后的术语 ID 列表，按优先级排序（关键词匹配优先）
+        """
+        # 提取向量搜索的术语 ID（排除已在关键词匹配中的）
+        vector_matches = {
+            term_id for term_id, _ in vector_results
+            if term_id not in keyword_matches
+        }
+        
+        # 合并结果：关键词匹配优先，然后是向量匹配
+        final_terms = list(keyword_matches) + list(vector_matches)
+        
+        # 应用最大召回限制
+        if max_recall is not None and max_recall > 0:
+            final_terms = final_terms[:max_recall]
+        
+        logger.debug(
+            f"Search results merged: total={len(final_terms)}, "
+            f"keyword={len(keyword_matches)}, vector={len(vector_matches)}"
+        )
+        
+        return final_terms
+    
+    # ============================================================
+    # 向后兼容的别名方法
+    # ============================================================
+    
+    async def search_similar_terms(
+        self,
+        query: str,
+        allowed_ids: Optional[List[str]] = None,
+        top_k: int = 20
+    ) -> List[Tuple[str, float]]:
+        """
+        搜索相似的术语（向量搜索）- 向后兼容方法
+        
+        此方法调用 search_by_vector，保持向后兼容性。
+        
+        Args:
+            query: 查询文本
+            allowed_ids: 允许的 ID 列表（用于权限过滤），如果为 None 则不过滤
+            top_k: 返回的 top-k 结果数量
+        
+        Returns:
+            List[Tuple[str, float]]: [(term_id, score), ...] 列表，按相似度降序排列
+        """
+        return await self.search_by_vector(
+            query=query,
+            allowed_ids=allowed_ids,
+            top_k=top_k,
+            similarity_threshold=0.0
+        )
 
 
 # ============================================================
