@@ -13,6 +13,7 @@ pypika
 sqlalchemy>=2.0.0
 asyncpg         # PostgreSQL Driver
 aiomysql        # MySQL Driver
+cryptography>=41.0.0  # Required for MySQL 8 caching_sha2_password authentication
 
 # LLM & AI (Row 8, 9, 10)
 openai          # Official SDK

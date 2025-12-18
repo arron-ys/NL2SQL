@@ -520,7 +520,7 @@ async def generate_sql(
     
     # 组合所有 WHERE 条件
     if where_criteria:
-        combined_criterion = Criterion.all(*where_criteria)
+        combined_criterion = Criterion.all(where_criteria)
         query = query.where(combined_criterion)
     
     # GROUP BY 子句

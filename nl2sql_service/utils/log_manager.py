@@ -83,9 +83,30 @@ def _truncate_repr(value: Any, *, limit: int = 300) -> str:
         s = repr(value)
     except Exception:
         s = "<unreprable>"
+    
+    # 移除换行符和制表符，避免日志格式异常
+    s = s.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+    
     if len(s) <= limit:
         return s
-    return s[:limit] + "...(truncated)"
+    
+    # 尝试在安全位置截断（避免在字符串中间截断）
+    truncated = s[:limit]
+    
+    # 如果截断位置在字符串中间（有未闭合的引号），尝试找到更安全的位置
+    # 简单策略：如果最后几个字符包含引号，尝试向前找到最后一个逗号或空格
+    if truncated.count("'") % 2 != 0 or truncated.count('"') % 2 != 0:
+        # 有未闭合的引号，尝试找到更安全的位置
+        safe_positions = [
+            truncated.rfind(','),
+            truncated.rfind(' '),
+            truncated.rfind(':'),
+        ]
+        safe_pos = max([p for p in safe_positions if p > limit - 50], default=limit - 20)
+        if safe_pos > 0:
+            truncated = s[:safe_pos]
+    
+    return truncated + "...(truncated)"
 
 
 def _escape_braces(s: str) -> str:
@@ -198,7 +219,11 @@ def configure_logger():
     # DEBUG sink：仅当 LOG_LEVEL=DEBUG 时启用（且只接收 DEBUG，避免重复打印）
     if log_level == "DEBUG":
         def _debug_only(record: Dict[str, Any]) -> bool:
-            return record.get("level") and record["level"].name == "DEBUG"
+            """只处理 DEBUG 级别的日志，确保 INFO 及以上级别不会被重复处理"""
+            level_name = record.get("level")
+            if level_name and hasattr(level_name, "name"):
+                return level_name.name == "DEBUG"
+            return False
 
         logger.add(
             sys.stdout,

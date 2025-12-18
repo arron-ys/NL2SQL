@@ -1011,26 +1011,126 @@ async def _execute_with_debug(
     sql_queries = []
     batch_results = []
     
+    request_id = query_desc.request_context.request_id
+    
+    logger.info(
+        "Starting debug mode execution",
+        extra={
+            "request_id": request_id,
+            "sub_query_count": len(query_desc.sub_queries),
+        }
+    )
+    
     # 为每个子查询执行 Stage 2-5 并收集中间产物
     for sub_query in query_desc.sub_queries:
+        subquery_start = time.perf_counter()
         try:
+            logger.debug(
+                "Processing sub-query in debug mode",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                    "sub_query_description": sub_query.description
+                }
+            )
+            
             # Stage 2: Plan Generation
+            stage2_start = time.perf_counter()
+            logger.info(
+                "Stage 2 started (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                }
+            )
+            
             plan = await stage2_plan_generation.process_subquery(
                 sub_query=sub_query,
                 context=query_desc.request_context,
                 registry=registry
             )
+            stage2_ms = int((time.perf_counter() - stage2_start) * 1000)
             plans.append(plan.model_dump())
             
+            logger.info(
+                "Stage 2 completed (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                    "intent": plan.intent.value,
+                    "stage2_ms": stage2_ms,
+                }
+            )
+            logger.debug(
+                "Stage 2 plan details (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                    "plan": {
+                        "intent": plan.intent.value,
+                        "metrics": [{"id": m.id, "compare_mode": m.compare_mode.value if m.compare_mode else None} for m in plan.metrics],
+                        "dimensions": [{"id": d.id, "time_grain": d.time_grain.value if d.time_grain else None} for d in plan.dimensions],
+                        "filters": [{"id": f.id, "op": f.op.value, "values": f.values} for f in plan.filters],
+                    },
+                },
+            )
+            
             # Stage 3: Validation
+            stage3_start = time.perf_counter()
+            logger.info(
+                "Stage 3 started (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                }
+            )
+            
             validated_plan = await stage3_validation.validate_and_normalize_plan(
                 plan=plan,
                 context=query_desc.request_context,
                 registry=registry
             )
+            stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
             validated_plans.append(validated_plan.model_dump())
             
+            logger.info(
+                "Stage 3 completed (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                    "intent": validated_plan.intent.value,
+                    "metrics_count": len(validated_plan.metrics),
+                    "dimensions_count": len(validated_plan.dimensions),
+                    "filters_count": len(validated_plan.filters),
+                    "stage3_ms": stage3_ms,
+                }
+            )
+            logger.debug(
+                "Stage 3 validated plan details (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                    "validated_plan": {
+                        "intent": validated_plan.intent.value,
+                        "metrics": [{"id": m.id, "compare_mode": m.compare_mode.value if m.compare_mode else None} for m in validated_plan.metrics],
+                        "dimensions": [{"id": d.id, "time_grain": d.time_grain.value if d.time_grain else None} for d in validated_plan.dimensions],
+                        "filters": [{"id": f.id, "op": f.op.value, "values": f.values} for f in validated_plan.filters],
+                        "time_range": validated_plan.time_range.model_dump() if validated_plan.time_range else None,
+                        "warnings": validated_plan.warnings if hasattr(validated_plan, "warnings") and validated_plan.warnings else [],
+                    },
+                },
+            )
+            
             # Stage 4: SQL Generation
+            stage4_start = time.perf_counter()
+            logger.info(
+                "Stage 4 started (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                }
+            )
+            
             config = get_pipeline_config()
             db_type = config.db_type.value
             
@@ -1040,13 +1140,53 @@ async def _execute_with_debug(
                 registry=registry,
                 db_type=db_type
             )
+            stage4_ms = int((time.perf_counter() - stage4_start) * 1000)
             sql_queries.append(sql)
             
+            logger.info(
+                "Stage 4 completed (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                    "sql_length": len(sql),
+                    "stage4_ms": stage4_ms,
+                }
+            )
+            logger.debug(
+                "Stage 4 SQL details (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                    "sql": sql,
+                },
+            )
+            
             # Stage 5: SQL Execution
+            stage5_start = time.perf_counter()
+            logger.info(
+                "Stage 5 started (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                }
+            )
+            
             result = await stage5_execution.execute_sql(
                 sql=sql,
                 context=query_desc.request_context,
                 db_type=db_type
+            )
+            stage5_ms = int((time.perf_counter() - stage5_start) * 1000)
+            
+            logger.info(
+                "Stage 5 completed (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                    "status": result.status.value,
+                    "row_count": len(result.data) if result.data else 0,
+                    "stage5_ms": stage5_ms,
+                }
             )
             
             # 添加到批量结果
@@ -1055,14 +1195,29 @@ async def _execute_with_debug(
                 "sub_query_description": sub_query.description,
                 "execution_result": result
             })
+            
+            subquery_ms = int((time.perf_counter() - subquery_start) * 1000)
+            logger.info(
+                "Sub-query completed successfully (debug mode)",
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query.id,
+                    "total_ms": subquery_ms,
+                }
+            )
         
         except Exception as e:
             # 如果某个阶段失败，创建错误结果
-            logger.error(
+            subquery_ms = int((time.perf_counter() - subquery_start) * 1000)
+            logger.opt(exception=e).error(
                 "Sub-query failed in debug mode",
                 extra={
+                    "request_id": request_id,
                     "sub_query_id": sub_query.id,
-                    "error": str(e)
+                    "sub_query_description": sub_query.description,
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                    "total_ms": subquery_ms,
                 }
             )
             
@@ -1079,9 +1234,28 @@ async def _execute_with_debug(
             })
     
     # Stage 6: Answer Generation
+    stage6_start = time.perf_counter()
+    logger.info(
+        "Stage 6 started (debug mode)",
+        extra={
+            "request_id": request_id,
+        }
+    )
+    
     final_answer = await stage6_answer.generate_final_answer(
         batch_results=batch_results,
         original_question=original_question
+    )
+    
+    stage6_ms = int((time.perf_counter() - stage6_start) * 1000)
+    logger.info(
+        "Stage 6 completed (debug mode)",
+        extra={
+            "request_id": request_id,
+            "status": final_answer.status.value,
+            "answer_length": len(final_answer.answer_text),
+            "stage6_ms": stage6_ms,
+        }
     )
     
     return {

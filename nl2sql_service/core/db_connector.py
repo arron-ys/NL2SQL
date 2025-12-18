@@ -5,6 +5,7 @@ Database Connector Module
 支持 MySQL 和 PostgreSQL 两种数据库方言。
 """
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -132,6 +133,7 @@ async def close_all() -> None:
 # ============================================================
 # 便捷函数：获取数据库会话
 # ============================================================
+@asynccontextmanager
 async def get_db_session():
     """
     获取数据库会话（用于依赖注入）
@@ -145,6 +147,13 @@ async def get_db_session():
         ```python
         async with get_db_session() as session:
             result = await session.execute(text("SELECT 1"))
+        ```
+        
+        在 FastAPI 路由中使用：
+        ```python
+        @app.get("/items")
+        async def get_items(session: AsyncSession = Depends(get_db_session)):
+            ...
         ```
     """
     from sqlalchemy.ext.asyncio import AsyncSession

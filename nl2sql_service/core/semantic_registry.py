@@ -294,13 +294,40 @@ class SemanticRegistry:
                 self.metadata_map[dim_id] = dim
                 self._add_to_keyword_index(dim_id, dim)
         
-        # 处理 entities
+        # =========================================================
+        # 处理实体定义 (Entities)
+        # 依据 semantic_core.yaml 结构，此列表下的所有对象均为实体
+        # =========================================================
         entities = yaml_data.get("entities", [])
         for entity in entities:
             entity_id = entity.get("id")
-            if entity_id:
-                self.metadata_map[entity_id] = entity
-                self._add_to_keyword_index(entity_id, entity)
+
+            # 【防御性检查 1】: 实体必须有 ID
+            if not entity_id:
+                raise SemanticConfigurationError(
+                    "Entity definition missing required 'id' field",
+                    details={"entity_content": entity}
+                )
+
+            # 【防御性检查 2 - 铁律执行】: 必须遵守全局命名规范
+            # 既然规范已定，就在加载时强制执行，防止脏数据进入系统
+            if not entity_id.startswith("ENT_"):
+                raise SemanticConfigurationError(
+                    f"Violation of Naming Convention: Entity ID '{entity_id}' must start with 'ENT_'.",
+                    details={"entity_id": entity_id, "source": "semantic_core.yaml"}
+                )
+
+            # 【数据标准化 - Bug 修复】
+            # 使用 copy() 防止修改原始 yaml_data (如果该数据被缓存或复用)
+            entity_def = entity.copy()
+            
+            # 显式注入内部多态标识 'type'
+            # 即使 YAML 中有 'entity_type' (FACT/DIM), 内部路由逻辑依赖的是 type="ENTITY"
+            entity_def["type"] = "ENTITY"
+
+            # 【注册与索引】
+            self.metadata_map[entity_id] = entity_def
+            self._add_to_keyword_index(entity_id, entity_def)
         
         logger.info(
             f"Built metadata_map: {len(self.metadata_map)} items, "

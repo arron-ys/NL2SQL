@@ -7,9 +7,18 @@ Pytest Configuration and Auto-Marking
 注意：.env 文件只在标记为 'live' 的测试中加载，避免非 live 测试使用真实 API（有 token 成本）。
 """
 import os
+import sys
 from pathlib import Path
 
 import pytest
+
+# 添加 nl2sql_service 目录到 Python 路径，确保可以从任何目录运行测试
+# conftest.py 位于 nl2sql_service/tests/，所以 parent.parent 就是 nl2sql_service 目录
+_nl2sql_service_dir = Path(__file__).parent.parent.resolve()
+
+# 将 nl2sql_service 目录添加到 sys.path（如果尚未添加）
+if str(_nl2sql_service_dir) not in sys.path:
+    sys.path.insert(0, str(_nl2sql_service_dir))
 
 
 # 定义必须至少拥有 1 个的"分层 marker"集合
@@ -53,6 +62,7 @@ path_marker_map = {
     # Live 测试文件（使用完整相对路径避免冲突）
     "live/test_performance_live.py": ["performance", "slow", "live"],
     "live/test_e2e_live.py": ["e2e", "slow", "live"],
+    "live/test_db_connection.py": ["integration", "live"],
 }
 
 
