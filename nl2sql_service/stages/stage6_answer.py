@@ -4,6 +4,7 @@ Stage 6: Answer Generation (答案生成)
 聚合多个子查询的结果，处理部分失败情况，并使用 LLM 生成最终的人类可读答案。
 对应详细设计文档 3.6 的定义。
 """
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from config.pipeline_config import get_pipeline_config
@@ -14,6 +15,21 @@ from utils.log_manager import get_logger
 from utils.prompt_templates import PROMPT_CLARIFICATION, PROMPT_DATA_INSIGHT
 
 logger = get_logger(__name__)
+
+_METRIC_ID_RE = re.compile(r"\bMETRIC_[A-Z0-9_]+\b")
+
+
+def _sanitize_error_message_for_user_and_llm(msg: str) -> str:
+    """
+    防止把内部标识（如 METRIC_*）带入 LLM prompt / 最终用户可见文本。
+    """
+    if not isinstance(msg, str) or not msg:
+        return ""
+    # 注意：占位符不要包含 "METRIC_" 字样，避免前端/测试误判为泄露
+    sanitized = _METRIC_ID_RE.sub("[REDACTED]", msg)
+    if len(sanitized) > 300:
+        sanitized = sanitized[:300] + "..."
+    return sanitized
 
 
 # ============================================================
@@ -132,7 +148,7 @@ def _build_multi_table_markdown(
             
             error_msg = "未知错误"
             if execution_result and execution_result.error:
-                error_msg = execution_result.error
+                error_msg = _sanitize_error_message_for_user_and_llm(execution_result.error)
             
             markdown_parts.append(f"- **{sub_query_description}** (ID: {sub_query_id}): {error_msg}")
         
@@ -350,6 +366,7 @@ async def _handle_all_failed(
     """
     # 选择主要错误
     error_type, error_msg = _select_primary_error(failed_items)
+    error_msg = _sanitize_error_message_for_user_and_llm(error_msg)
     
     logger.info(
         "All sub-queries failed",
@@ -387,7 +404,7 @@ async def _handle_all_failed(
                 extra={"error": str(e)}
             )
             # 回退到静态消息
-            answer_text = f"抱歉，您没有权限访问相关数据。错误详情：{error_msg}"
+            answer_text = f"抱歉，您没有权限访问相关数据。{error_msg}"
     
     elif error_type == "TIMEOUT":
         # 超时错误：静态消息
@@ -412,7 +429,7 @@ async def _handle_all_failed(
         
         error_msg_item = "未知错误"
         if execution_result and execution_result.error:
-            error_msg_item = execution_result.error
+            error_msg_item = _sanitize_error_message_for_user_and_llm(execution_result.error)
         
         data_item = ResultDataItem(
             sub_query_id=sub_query_id,

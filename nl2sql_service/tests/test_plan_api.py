@@ -513,8 +513,15 @@ class TestErrorContract:
 
             assert response.status_code == 500
             error = response.json()
-            assert "detail" in error
-            assert "Internal server error" in error["detail"]
+            # 由 AppError handler 统一输出：
+            # {"request_id":..., "error_stage":..., "error": {"code":..., "message":..., "details": {...}}}
+            assert "request_id" in error
+            assert "error_stage" in error
+            assert "error" in error
+            assert error["error"]["code"] == "INTERNAL_ERROR"
+            assert error["error"]["message"] == "Internal server error"
+            assert "details" in error["error"]
+            assert error["error"]["details"]["error_type"] in {"Stage2Error", "Stage2Error"}
 
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
@@ -528,7 +535,7 @@ class TestErrorContract:
         client,
         mock_registry,
     ):
-        """测试 MissingMetricError 转换为 500 错误"""
+        """测试 MissingMetricError 走业务软错误（HTTP 200）"""
         import main
         with patch.object(main, 'registry', mock_registry):
             mock_decomposition.return_value = MagicMock(
@@ -562,10 +569,12 @@ class TestErrorContract:
                 },
             )
 
-            assert response.status_code == 500
-            error = response.json()
-            assert "detail" in error
-            assert "Internal server error" in error["detail"]
+            # MissingMetricError 有专用 handler：HTTP 200 + status=ERROR
+            assert response.status_code == 200
+            body = response.json()
+            assert body["status"] == "ERROR"
+            assert body["error"]["code"] == "NEED_CLARIFICATION"
+            assert body["error"]["stage"] == "STAGE_3_VALIDATION"
 
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
@@ -579,7 +588,7 @@ class TestErrorContract:
         client,
         mock_registry,
     ):
-        """测试 PermissionDeniedError 转换为 500 错误"""
+        """测试 PermissionDeniedError 走业务软错误（HTTP 200）"""
         import main
         with patch.object(main, 'registry', mock_registry):
             mock_decomposition.return_value = MagicMock(
@@ -613,10 +622,12 @@ class TestErrorContract:
                 },
             )
 
-            assert response.status_code == 500
-            error = response.json()
-            assert "detail" in error
-            assert "Internal server error" in error["detail"]
+            # PermissionDeniedError 有专用 handler：HTTP 200 + 脱敏提示
+            assert response.status_code == 200
+            body = response.json()
+            assert body["status"] == "ERROR"
+            assert body["error"]["code"] == "PERMISSION_DENIED"
+            assert body["error"]["stage"] == "STAGE_3_VALIDATION"
 
 
 # ============================================================

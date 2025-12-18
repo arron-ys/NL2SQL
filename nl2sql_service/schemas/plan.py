@@ -13,7 +13,7 @@ PLAN Schema Definition
 from enum import Enum
 from typing import Annotated, Any, List, Optional, Union
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 
 # ============================================================
@@ -187,6 +187,35 @@ class TimeRange(BaseModel):
         default=None,
         description="ABSOLUTE 类型时使用，结束时间（ISO 8601 格式）"
     )
+
+    @model_validator(mode='before')
+    @classmethod
+    def fix_nested_absolute_structure(cls, data: Any) -> Any:
+        """
+        兼容性修复：处理 LLM 偶尔产生的嵌套结构幻觉。
+        
+        LLM 有时会错误地将 ABSOLUTE 类型的 start/end 嵌套在 value 字段中：
+        错误: {"type": "ABSOLUTE", "value": {"start": "...", "end": "..."}}
+        修正: {"type": "ABSOLUTE", "start": "...", "end": "..."}
+        """
+        # 确保 data 是字典且类型为 ABSOLUTE
+        if not isinstance(data, dict):
+            return data
+            
+        if data.get('type') == 'ABSOLUTE':
+            val = data.get('value')
+            # 如果 value 是一个字典（说明 LLM 犯错了）
+            if isinstance(val, dict):
+                # 1. 将嵌套的 start/end 提取到顶层
+                if 'start' in val:
+                    data['start'] = val['start']
+                if 'end' in val:
+                    data['end'] = val['end']
+                
+                # 2. 删除错误的 value 字段（使用 pop 避免 KeyError）
+                data.pop('value', None)
+                
+        return data
 
 
 class OrderItem(BaseModel):

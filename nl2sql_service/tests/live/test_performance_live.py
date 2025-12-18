@@ -32,17 +32,59 @@ def client():
 
 
 def _should_skip_live_tests():
-    """检查是否应该跳过 Live 测试"""
-    # 直接检查环境变量并使用 is_placeholder_key 判断
-    openai_key_env = os.getenv("OPENAI_API_KEY", "")
+    """
+    检查是否应该跳过 Live 测试
     
-    # 如果 OpenAI Key 缺失或为占位符，跳过测试
-    if not openai_key_env or is_placeholder_key(openai_key_env):
-        return True, "OpenAI API Key not available or is placeholder"
+    根据 .env 中的 DEFAULT_LLM_PROVIDER 配置或自动选择逻辑（与 AIClient._default_config() 一致）
+    检查对应的 LLM provider API Key 是否可用。
+    """
+    # 读取 LLM provider 配置（与 AIClient._default_config() 逻辑一致）
+    default_llm_provider = os.getenv("DEFAULT_LLM_PROVIDER", "").lower()
+    
+    # 读取所有可能的 API Keys
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "")
+    qwen_key = os.getenv("QWEN_API_KEY", "")
+    jina_key = os.getenv("JINA_API_KEY", "")
+    
+    # 确定实际使用的 LLM provider（与 AIClient._default_config() 逻辑一致）
+    if default_llm_provider:
+        # 验证指定的 provider 是否配置了 API Key
+        if default_llm_provider == "deepseek" and not deepseek_key:
+            # 如果指定了 deepseek 但没有 key，fallback 到自动选择
+            default_llm_provider = ""
+        elif default_llm_provider == "qwen" and not qwen_key:
+            # 如果指定了 qwen 但没有 key，fallback 到自动选择
+            default_llm_provider = ""
+        elif default_llm_provider == "openai" and not openai_key:
+            # 如果指定了 openai 但没有 key，fallback 到自动选择
+            default_llm_provider = ""
+        elif default_llm_provider not in ["openai", "deepseek", "qwen"]:
+            # 无效的 provider，fallback 到自动选择
+            default_llm_provider = ""
+    
+    # 如果没有明确指定或指定无效，使用自动选择逻辑（DeepSeek > Qwen > OpenAI）
+    if not default_llm_provider:
+        if deepseek_key:
+            default_llm_provider = "deepseek"
+        elif qwen_key:
+            default_llm_provider = "qwen"
+        else:
+            default_llm_provider = "openai"
+    
+    # 根据确定的 provider 检查对应的 API Key
+    if default_llm_provider == "deepseek":
+        if not deepseek_key or is_placeholder_key(deepseek_key):
+            return True, f"DEEPSEEK_API_KEY not available or is placeholder (DEFAULT_LLM_PROVIDER={default_llm_provider})"
+    elif default_llm_provider == "qwen":
+        if not qwen_key or is_placeholder_key(qwen_key):
+            return True, f"QWEN_API_KEY not available or is placeholder (DEFAULT_LLM_PROVIDER={default_llm_provider})"
+    else:  # openai
+        if not openai_key or is_placeholder_key(openai_key):
+            return True, f"OPENAI_API_KEY not available or is placeholder (DEFAULT_LLM_PROVIDER={default_llm_provider})"
     
     # Jina Key 可选，但如果提供了但为占位符，也跳过
-    jina_key_env = os.getenv("JINA_API_KEY", "")
-    if jina_key_env and is_placeholder_key(jina_key_env):
+    if jina_key and is_placeholder_key(jina_key):
         return True, "Jina API Key is placeholder"
     
     return False, None

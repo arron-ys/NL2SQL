@@ -52,74 +52,87 @@ PROMPT_SUBQUERY_DECOMPOSITION = """你是一个专业的查询分解助手（Que
 # ============================================================
 # Stage 2: Plan Generation (计划生成)
 # ============================================================
-PROMPT_PLAN_GENERATION = """你是一个专业的数据分析师AI（Data Analyst AI）。你的任务是根据用户的自然语言查询，生成一个结构化的查询计划（QueryPlan）。
+PROMPT_PLAN_GENERATION = """
+# Role
+You are an expert Data Analyst AI. Your goal is to map the user's natural language question into a structured **JSON Query Plan**.
 
-当前日期：{current_date}
+# Context
+- Current Date: {current_date} (Format: YYYY-MM-DD)
+- User Question: "{user_query}"
 
-用户子查询：
-{sub_query_description}
+# Available Schema (Retrieved Context)
+You can ONLY use the Metrics and Dimensions listed below.
+**CRITICAL RULE:** Do NOT invent new IDs. Do NOT use IDs that are not in this list.
+---------------------------------------------------
+{schema_context}
+---------------------------------------------------
 
-可用的语义资源：
-{available_resources}
+# Logic Rules & Constraints
 
-**关键规则：不要发明新的ID！**
-- 你只能使用 available_resources 中列出的指标ID（METRIC_*）、维度ID（DIM_*）、逻辑过滤器ID（LF_*）等。
-- 绝对禁止创建新的ID或使用未在资源列表中出现的ID。
-- 如果用户查询中提到的概念在资源列表中找不到对应的ID，请在 warnings 字段中记录此情况，并使用最接近的可用资源，或者将相关字段留空。
+1. **Intent Classification**:
+   - `AGG`: If the user asks for aggregated numbers (e.g., "Total Sales", "Count orders").
+   - `TREND`: If the user asks for trends over time (e.g., "Monthly sales trend", "Daily active users").
+   - `DETAIL`: If the user asks for raw records (e.g., "List recent orders", "Show employee details").
 
-**查询计划结构：**
-- intent: 查询意图，必须是 "AGG"（聚合查询）、"TREND"（趋势查询）或 "DETAIL"（明细查询）之一
-- metrics: 指标列表，每个指标包含 id（必须以 METRIC_ 开头）和可选的 compare_mode（YOY/MOM/WOW）
-- dimensions: 维度列表，每个维度包含 id（必须以 DIM_ 开头）和可选的 time_grain（DAY/WEEK/MONTH/QUARTER/YEAR）
-- filters: 过滤器列表，每个过滤器包含 id、op（操作符）和 values（值列表）
-- time_range: 时间范围（可选），类型可以是 LAST_N 或 ABSOLUTE
-- order_by: 排序列表（可选），每个排序项包含 id 和 direction（ASC/DESC）
-- limit: 结果限制数量（可选）
-- warnings: 警告信息列表，用于记录不确定或无法匹配的情况
+2. **Metrics & Dimensions**:
+   - Map user phrases to the exact `ID` from the Available Schema.
+   - **Metrics**:
+     - If user asks for comparison (e.g., "YoY", "同比"), set `compare_mode`="YOY".
+     - If "MoM"/"环比", set `compare_mode`="MOM".
+     - If "WoW"/"周环比", set `compare_mode`="WOW".
+     - Otherwise, set `compare_mode`=null.
+   - **Dimensions**:
+     - **CRITICAL**: Only set `time_grain` (e.g., "DAY", "MONTH") if the dimension is marked with `| Is_Time: True` in the **Schema Context**.
+     - For all other dimensions, `time_grain` MUST be null.
 
-请以 JSON 格式返回一个单一的、扁平的 QueryPlan 对象（不是数组），格式如下：
+3. **Filters**:
+   - Put ALL filter conditions here (do not distinguish between WHERE and HAVING).
+   - `id`: Must be a valid Metric ID or Dimension ID.
+   - `op`: Choose from ["EQ", "NEQ", "IN", "NOT_IN", "GT", "LT", "GTE", "LTE", "BETWEEN", "LIKE"].
+   - `values`: Must be a list. **Strictly keep original types**. Do NOT convert string IDs (e.g., "007") to numbers (7).
+
+4. **Time Range**:
+   - **Relative**: If user says "last 7 days", use `{{ "type": "LAST_N", "value": 7, "unit": "DAY" }}`.
+   - **Absolute**: If user says "2023-01-01 to 2023-01-31", use `{{ "type": "ABSOLUTE", "start": "2023-01-01", "end": "2023-01-31" }}`.
+     **CRITICAL**: For ABSOLUTE type, `start` and `end` must be top-level fields. Do NOT nest them inside a `value` object.
+   - **Missing**: If user mentions NO time, set `time_range` to `null`. (Do NOT guess a default time).
+   
+5. **Order By & Limit**:
+   - `order_by`: Only sort by metrics or dimensions that are selected in the query.
+   - `limit`: Set to integer if user specifies (e.g., "Top 10"). Otherwise `null`.
+
+# JSON Output Format
+Return ONLY a valid JSON object matching this structure.
+**IMPORTANT:** The example below uses `//` comments to show different options. Your output must be **standard JSON** (no comments).
+
+```json
 {{
   "intent": "AGG",
   "metrics": [
-    {{
-      "id": "METRIC_GMV",
-      "compare_mode": null
-    }}
+    {{ "id": "METRIC_ID", "compare_mode": "YOY" }}
   ],
   "dimensions": [
-    {{
-      "id": "DIM_REGION",
-      "time_grain": null
-    }}
+    {{ "id": "DIM_ID", "time_grain": "MONTH" }}
   ],
   "filters": [
-    {{
-      "id": "DIM_COUNTRY",
-      "op": "EQ",
-      "values": ["USA"]
-    }}
+    {{ "id": "DIM_ID", "op": "EQ", "values": ["Value"] }}
   ],
   "time_range": {{
+    // OPTION 1: Relative Time (Use this structure for "last N days")
     "type": "LAST_N",
     "value": 30,
     "unit": "DAY"
+    
+    // OPTION 2: Absolute Time (Use this structure for specific dates)
+    // "type": "ABSOLUTE",
+    // "start": "2023-01-01",
+    // "end": "2023-01-31"
   }},
   "order_by": [
-    {{
-      "id": "METRIC_GMV",
-      "direction": "DESC"
-    }}
+    {{ "id": "METRIC_ID", "direction": "DESC" }}
   ],
-  "limit": 10,
-  "warnings": []
+  "limit": 100
 }}
-
-**重要约束：**
-1. 输出必须是单个 JSON 对象，不是数组
-2. 所有 ID 必须来自 available_resources，禁止发明新ID
-3. 如果某个字段不需要，可以设置为 null 或空数组 []
-4. 时间范围必须根据用户查询中的时间表达正确设置
-5. 如果无法匹配某些概念，必须在 warnings 中说明
 """
 
 

@@ -5,6 +5,7 @@ Stage 2: Plan Generation (计划生成)
 使用 RAG 进行语义检索，生成 Skeleton Plan。
 对应详细设计文档 3.2 的定义。
 """
+import asyncio
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -58,6 +59,44 @@ class VectorSearchFailed(AppError):
 # ============================================================
 # 辅助函数
 # ============================================================
+async def _llm_wait_heartbeat(
+    *,
+    interval_seconds: int,
+    stop_event: asyncio.Event,
+    request_id: str,
+    sub_query_id: str,
+    provider_hint: Optional[str] = None,
+    model_hint: Optional[str] = None,
+    prompt_chars: Optional[int] = None,
+    schema_context_chars: Optional[int] = None,
+) -> None:
+    """
+    LLM 等待心跳（INFO 级别）：
+    - 仅在“等待 LLM 返回”的窗口内运行
+    - 每 interval_seconds 打一条，帮助判断是否卡死/还在等待
+    """
+    waited = 0
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+            break
+        except asyncio.TimeoutError:
+            waited += interval_seconds
+            logger.info(
+                "【Stage 2 等待 LLM 返回PLAN（网络/推理中），已等待 {} 秒】",
+                waited,
+                extra={
+                    "request_id": request_id,
+                    "sub_query_id": sub_query_id,
+                    "provider": provider_hint,
+                    "model": model_hint,
+                    "prompt_chars": prompt_chars,
+                    "schema_context_chars": schema_context_chars,
+                    "llm_wait_s": waited,
+                },
+            )
+
+
 def _format_schema_context(terms: List[str], registry: SemanticRegistry) -> str:
     """
     格式化语义资源上下文，生成 LLM 可读的文本块
@@ -605,6 +644,13 @@ async def process_subquery(
     # 详细记录最终合并结果 - 在控制台明确显示
     final_metrics = [t for t in final_terms if t and t.startswith("METRIC_")]
     final_dimensions = [t for t in final_terms if t and t.startswith("DIM_")]
+
+    # ============================================================
+    # Permission Shadow Check
+    # ============================================================
+    # 旧逻辑（RAG 后、final_metrics==0 的 shadow）已移除：
+    # - RAG 在 RBAC 过滤后经常会召回“可访问但不相关”的噪音指标，导致 final_metrics 非空，从而漏判。
+    # - 真正需要定性的时机是：LLM 输出的 plan 在 AGG/TREND 下 metrics 为空。
     
     # INFO：仅摘要 + 耗时（Flow & Summary）
     rag_ms = int((time.perf_counter() - stage2_start) * 1000)
@@ -680,7 +726,7 @@ async def process_subquery(
     
     # 详细记录 Schema Context 格式化结果
     logger.debug(
-        "Schema context formatted for LLM",
+        "【Stage 2 Schema Context 已生成，准备调用 LLM】",
         extra={
             "context_length": len(schema_context),
             "context_preview": schema_context[:500] if len(schema_context) > 500 else schema_context,
@@ -694,8 +740,8 @@ async def process_subquery(
     current_date_str = context.current_date.strftime("%Y-%m-%d")
     
     formatted_prompt = PROMPT_PLAN_GENERATION.format(
-        sub_query_description=sub_query.description,
-        available_resources=schema_context,
+        user_query=sub_query.description,
+        schema_context=schema_context,
         current_date=current_date_str
     )
     
@@ -708,8 +754,32 @@ async def process_subquery(
     
     # 调用 LLM
     llm_start = time.perf_counter()
+    # DEBUG：打印发送给 LLM 的完整提示词（用户要求只看完整 Prompt）
+    # 同时输出本次 plan_generation 路由到的模型名称（例如 deepseek-reasoner）
+    ai_client = get_ai_client()
     try:
-        ai_client = get_ai_client()
+        # 使用 _resolve_model 方法获取实际使用的 provider 和 model
+        _, model_name = ai_client._resolve_model("plan_generation")
+        model_info = model_name if model_name else "unknown"
+    except Exception:
+        model_info = "unknown"
+    logger.debug(f"【已将提示词发送给 LLM（模型：{model_info}）】Prompt如下：\n{formatted_prompt}")
+    # INFO 心跳：等待 LLM 返回期间每 5 秒提示一次（便于判断是否卡死）
+    hb_stop = asyncio.Event()
+    hb_task = asyncio.create_task(
+        _llm_wait_heartbeat(
+            interval_seconds=5,
+            stop_event=hb_stop,
+            request_id=context.request_id,
+            sub_query_id=sub_query.id,
+            # provider/model 最终由 provider 日志输出，这里仅给提示（可能为空）
+            provider_hint=None,
+            model_hint=None,
+            prompt_chars=len(formatted_prompt),
+            schema_context_chars=len(schema_context),
+        )
+    )
+    try:
         plan_dict = await ai_client.generate_plan(
             messages=messages,
             temperature=0.0
@@ -755,6 +825,16 @@ async def process_subquery(
             },
         )
         raise Stage2Error(f"Failed to call LLM for plan generation: {str(e)}") from e
+    finally:
+        # 停止心跳任务（无论成功或失败都必须清理）
+        try:
+            hb_stop.set()
+        except Exception:
+            pass
+        try:
+            hb_task.cancel()
+        except Exception:
+            pass
     
     # Step 4: Anti-Hallucination
     # plan_dict 已经是解析后的 JSON 对象（从 ai_client.generate_plan 返回）
@@ -786,6 +866,169 @@ async def process_subquery(
     # 结构归一化：防止 LLM 输出 None/脏类型导致后续崩溃
     _normalize_plan_structure(plan_dict)
 
+    # ============================================================
+    # Permission Shadow Check (Post-LLM, Strong Signal)
+    # ============================================================
+    # 说明：
+    # - 真实问题发生在“LLM 最终输出 metrics 为空”时（而不是 RAG 是否召回到 metrics）
+    # - 因为 RBAC 过滤 + 向量召回容易“跑偏”到可访问但不相关的指标，导致 final_metrics 非空，
+    #   但 LLM 仍会输出 metrics=[]（无法满足用户原意）。
+    # - 因此这里增加一个 Post-LLM 的 shadow check，用 unfiltered 向量检索来判断是否是“被权限拦截”。
+    #
+    # 收敛要求（防误判）：
+    # - 不要“只要 blocked_metric_ids 非空就判 PERMISSION_DENIED”
+    # - 必须满足强信号条件（Top1+margin 或 TopK 主导）才打 [PERMISSION_DENIED]
+    try:
+        intent_val = plan_dict.get("intent")
+        plan_metrics = plan_dict.get("metrics") or []
+        if intent_val in ("AGG", "TREND") and isinstance(plan_metrics, list) and len(plan_metrics) == 0:
+            SHADOW_MARGIN = 0.08
+            DOMINANCE_RATIO = 0.6
+
+            shadow_vector_results = await registry.search_similar_terms(
+                query=sub_query.description,
+                allowed_ids=None,  # bypass RBAC
+                top_k=config.vector_search_top_k,
+            )
+
+            # 仅处理 METRIC_* 且过阈值的结果
+            shadow_metrics: List[Tuple[str, float, str, bool]] = []
+            for result_item in shadow_vector_results:
+                try:
+                    if isinstance(result_item, tuple) and len(result_item) == 2:
+                        term_id, score = result_item
+                    elif isinstance(result_item, dict):
+                        term_id = result_item.get("id") or result_item.get("term_id")
+                        score = result_item.get("score") or result_item.get("similarity")
+                    else:
+                        continue
+                    if not isinstance(term_id, str) or not term_id.startswith("METRIC_"):
+                        continue
+                    try:
+                        score_f = float(score)
+                    except (ValueError, TypeError):
+                        continue
+                    if score_f < config.similarity_threshold:
+                        continue
+
+                    term_def = registry.get_term(term_id) or {}
+                    domain_id = term_def.get("domain_id") if isinstance(term_def, dict) else None
+                    domain_id = domain_id if isinstance(domain_id, str) and domain_id else "UNKNOWN"
+                    is_allowed = term_id in allowed_ids_set
+                    shadow_metrics.append((term_id, score_f, domain_id, is_allowed))
+                except Exception:
+                    continue
+
+            # 按分数降序排序
+            shadow_metrics.sort(key=lambda x: x[1], reverse=True)
+
+            blocked = [m for m in shadow_metrics if not m[3]]
+            allowed = [m for m in shadow_metrics if m[3]]
+
+            # 若没有任何 blocked metrics，直接不判定（避免误判）
+            if blocked:
+                blocked_top1 = blocked[0]
+                allowed_top1 = allowed[0] if allowed else None
+
+                blocked_top1_score = blocked_top1[1]
+                allowed_top1_score = allowed_top1[1] if allowed_top1 else 0.0
+
+                # 强信号条件 1：Top1 强相关 + margin
+                top1_strong = (
+                    blocked_top1_score >= config.similarity_threshold
+                    and (allowed_top1 is None or blocked_top1_score >= allowed_top1_score + SHADOW_MARGIN)
+                )
+
+                # 强信号条件 2：TopK 主导（blocked 占比高且均分更高）
+                total_n = len(shadow_metrics)
+                blocked_ratio = (len(blocked) / total_n) if total_n else 0.0
+                blocked_avg = (sum(x[1] for x in blocked) / len(blocked)) if blocked else 0.0
+                allowed_avg = (sum(x[1] for x in allowed) / len(allowed)) if allowed else 0.0
+                topk_dominant = (
+                    total_n >= 5
+                    and blocked_ratio >= DOMINANCE_RATIO
+                    and blocked_avg >= allowed_avg + SHADOW_MARGIN
+                )
+
+                if top1_strong or topk_dominant:
+                    # 被拦截的 metric ids（仅用于内部 DEBUG）
+                    blocked_metric_ids = [mid for (mid, _, _, _) in blocked]
+
+                    # warning 脱敏：只放 name + domain
+                    blocked_metric_names: List[str] = []
+                    blocked_domains: List[str] = []
+                    for mid in blocked_metric_ids:
+                        term_def = registry.get_term(mid) or {}
+                        name = term_def.get("name") if isinstance(term_def, dict) else None
+                        blocked_metric_names.append(name or mid)
+                        d = term_def.get("domain_id") if isinstance(term_def, dict) else None
+                        if isinstance(d, str) and d:
+                            blocked_domains.append(d)
+
+                    # domain 取 blocked_top1 的 domain 更稳（代表“最强信号”）
+                    domain_id = blocked_top1[2] or (sorted(set(blocked_domains))[0] if blocked_domains else "UNKNOWN")
+                    _permission_denied_warning = (
+                        f"[PERMISSION_DENIED] Blocked metrics: {blocked_metric_names} (Domain: {domain_id})"
+                    )
+                    # 写入系统标记，供 Stage3 熔断
+                    if isinstance(plan_dict.get("warnings"), list):
+                        plan_dict["warnings"].append(_permission_denied_warning)
+                    else:
+                        plan_dict["warnings"] = [_permission_denied_warning]
+
+                    logger.debug(
+                        "Permission shadow check (post-LLM): strong signal detected",
+                        extra={
+                            "request_id": context.request_id,
+                            "sub_query_id": sub_query.id,
+                            "role_id": context.role_id,
+                            "similarity_threshold": config.similarity_threshold,
+                            "shadow_top_k": config.vector_search_top_k,
+                            "shadow_margin": SHADOW_MARGIN,
+                            "dominance_ratio": DOMINANCE_RATIO,
+                            "blocked_metric_ids": blocked_metric_ids,
+                            "blocked_top1": {"id": blocked_top1[0], "score": blocked_top1_score, "domain": blocked_top1[2]},
+                            "allowed_top1": (
+                                {"id": allowed_top1[0], "score": allowed_top1_score, "domain": allowed_top1[2]}
+                                if allowed_top1
+                                else None
+                            ),
+                            "blocked_ratio": blocked_ratio,
+                            "blocked_avg": blocked_avg,
+                            "allowed_avg": allowed_avg,
+                            "strategy": "top1_margin" if top1_strong else "topk_dominant",
+                        },
+                    )
+                else:
+                    # DEBUG：未满足强信号，不判 PERMISSION_DENIED（避免误判）
+                    logger.debug(
+                        "Permission shadow check (post-LLM): weak signal, skip PERMISSION_DENIED",
+                        extra={
+                            "request_id": context.request_id,
+                            "sub_query_id": sub_query.id,
+                            "role_id": context.role_id,
+                            "blocked_top1_score": blocked_top1_score,
+                            "allowed_top1_score": allowed_top1_score,
+                            "blocked_count": len(blocked),
+                            "allowed_count": len(allowed),
+                            "total": len(shadow_metrics),
+                            "blocked_ratio": blocked_ratio,
+                            "blocked_avg": blocked_avg,
+                            "allowed_avg": allowed_avg,
+                            "shadow_margin": SHADOW_MARGIN,
+                            "dominance_ratio": DOMINANCE_RATIO,
+                        },
+                    )
+    except Exception as e:
+        logger.opt(exception=e).warning(
+            "Permission shadow check (post-LLM) failed (ignored)",
+            extra={
+                "request_id": context.request_id,
+                "sub_query_id": sub_query.id,
+                "role_id": context.role_id,
+            },
+        )
+
     # 执行反幻觉检查
     cleaned_plan, warnings = _perform_anti_hallucination_check(plan_dict, registry)
     
@@ -816,7 +1059,7 @@ async def process_subquery(
             "Anti-hallucination warnings (details)",
             extra={"warnings": warnings},
         )
-    
+
     cleaned_plan["warnings"] = warnings
     
     # Step 5: Pydantic Instantiation

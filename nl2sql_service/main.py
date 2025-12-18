@@ -406,6 +406,81 @@ async def app_error_handler(request: Request, exc: AppError):
     )
 
 
+@app.exception_handler(stage3_validation.PermissionDeniedError)
+async def permission_denied_error_handler(
+    request: Request, exc: stage3_validation.PermissionDeniedError
+):
+    """
+    软错误：权限拒绝（按设计文档：HTTP 200）
+
+    安全要求：对外响应必须脱敏，不返回具体 METRIC_* ID。
+    详细信息仅写入服务端日志，便于排查 Stage2 的 Permission Shadow Check。
+    """
+    rid = get_request_id()
+
+    # 服务端日志：记录完整 detail（可能包含被拦截指标的名称/域信息）
+    logger.warning(
+        "Permission denied (RBAC blocked query)",
+        extra={
+            "request_id": rid,
+            "path": request.url.path,
+            "error_stage": "STAGE_3_VALIDATION",
+            "error_type": type(exc).__name__,
+            "detail": str(exc),
+        },
+    )
+
+    # 对外脱敏文案（不包含具体指标 ID）
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "request_id": rid,
+            "status": "ERROR",
+            "error": {
+                "code": "PERMISSION_DENIED",
+                "message": "您当前的角色没有权限访问查询中涉及的业务域数据（如销售域）。",
+                "stage": "STAGE_3_VALIDATION",
+            },
+        },
+    )
+
+
+@app.exception_handler(stage3_validation.MissingMetricError)
+async def missing_metric_error_handler(
+    request: Request, exc: stage3_validation.MissingMetricError
+):
+    """
+    软错误：缺少指标（按设计文档：HTTP 200）
+
+    目标：/nl2sql/plan 不应因业务输入不满足而返回 5xx。
+    """
+    rid = get_request_id()
+
+    logger.info(
+        "Need clarification: missing metric in plan",
+        extra={
+            "request_id": rid,
+            "path": request.url.path,
+            "error_stage": "STAGE_3_VALIDATION",
+            "error_type": type(exc).__name__,
+            "detail": str(exc),
+        },
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "request_id": rid,
+            "status": "ERROR",
+            "error": {
+                "code": "NEED_CLARIFICATION",
+                "message": "当前问题还不够明确：请说明您想看的具体指标或口径（例如 GMV、订单数、销售额等），以及需要的时间范围。",
+                "stage": "STAGE_3_VALIDATION",
+            },
+        },
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
@@ -595,6 +670,19 @@ async def execute_nl2sql(
     except AppError:
         # AppError 必须自然传播，交给 app_error_handler 输出统一结构
         raise
+    except (stage3_validation.PermissionDeniedError, stage3_validation.MissingMetricError) as e:
+        # 业务软错误：无堆栈，避免误报系统崩溃；交给全局 handler 返回 HTTP 200
+        rid = get_request_id()
+        logger.warning(
+            "Request ended with business exception: {}",
+            str(e),
+            extra={
+                "request_id": rid,
+                "path": "/nl2sql/execute",
+                "error_type": type(e).__name__,
+            },
+        )
+        raise
     except Exception as e:
         logger.opt(exception=e).error(
             "NL2SQL request failed",
@@ -604,7 +692,7 @@ async def execute_nl2sql(
             },
         )
         # 让特定异常自然传播，由全局异常处理器捕获（避免破坏错误结构/状态码）
-        if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError)):
+        if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError, stage3_validation.PermissionDeniedError)):
             raise
         # 未知异常：包装成 AppError（不改变 status code=500），走统一结构
         raise AppError(
@@ -773,6 +861,19 @@ async def generate_plan(
     except AppError:
         # AppError 必须自然传播，交给 app_error_handler 输出统一结构
         raise
+    except (stage3_validation.PermissionDeniedError, stage3_validation.MissingMetricError) as e:
+        # 业务软错误：无堆栈，避免误报系统崩溃；交给全局 handler 返回 HTTP 200
+        rid = get_request_id()
+        logger.warning(
+            "Request ended with business exception: {}",
+            str(e),
+            extra={
+                "request_id": rid,
+                "path": "/nl2sql/plan",
+                "error_type": type(e).__name__,
+            },
+        )
+        raise
     except Exception as e:
         logger.opt(exception=e).error(
             "Plan generation failed",
@@ -781,7 +882,7 @@ async def generate_plan(
                 "error_type": type(e).__name__,
             },
         )
-        if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError)):
+        if isinstance(e, (SecurityPolicyNotFound, SecurityConfigError, AIProviderInitError, stage3_validation.PermissionDeniedError)):
             raise
         # 未知异常：包装成 AppError（不改变 status code=500），走统一结构
         raise AppError(

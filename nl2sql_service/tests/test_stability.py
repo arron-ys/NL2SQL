@@ -43,9 +43,8 @@ class TestGracefulDegradation:
         client,
     ):
         """测试LLM服务失败时的处理"""
-        mock_registry_global = MagicMock()
-
-        # Mock LLM服务抛出异常
+        # patch("main.registry") 已经把全局 registry 替换为一个 MagicMock（无需再次赋值）
+        # Mock Stage2 抛出异常（模拟 LLM/Stage2 失败）
         mock_generate_plan.side_effect = Exception("LLM service unavailable")
 
         response = client.post(
@@ -60,33 +59,37 @@ class TestGracefulDegradation:
 
         # 应该返回错误，但不应该是未处理的异常
         assert response.status_code in [500, 400]
-        # 错误响应应该有结构化的错误信息
+        # 错误响应应该有结构化的错误信息（AppError handler）
         error_data = response.json()
-        assert "detail" in error_data or "detail" in str(error_data)
+        assert "request_id" in error_data
+        assert "error" in error_data
+        assert "code" in error_data["error"]
 
     @pytest.mark.asyncio
     @pytest.mark.stability
-    @patch("main.registry")
     async def test_registry_not_initialized_handling(
-        self, mock_registry_global, client
+        self, client
     ):
         """测试注册表未初始化时的处理"""
-        mock_registry_global = None  # 模拟未初始化
+        # 需要真的把 main.registry 置为 None（仅重绑入参不会影响 patch）
+        import main
+        with patch.object(main, "registry", None):
+            response = client.post(
+                "/nl2sql/plan",
+                json={
+                    "question": "统计员工数量",
+                    "user_id": "user_001",
+                    "role_id": "ROLE_HR_HEAD",
+                    "tenant_id": "tenant_001",
+                },
+            )
 
-        response = client.post(
-            "/nl2sql/plan",
-            json={
-                "question": "统计员工数量",
-                "user_id": "user_001",
-                "role_id": "ROLE_HR_HEAD",
-                "tenant_id": "tenant_001",
-            },
-        )
-
-        # 应该返回错误
+        # registry 未初始化会触发 RuntimeError，被包装为 AppError => 500
         assert response.status_code in [500, 503]
         error_data = response.json()
-        assert "detail" in error_data or "detail" in str(error_data)
+        assert "request_id" in error_data
+        assert "error" in error_data
+        assert error_data["error"]["code"] in {"INTERNAL_ERROR", "LLM_PROVIDER_INIT_FAILED"}
 
     @pytest.mark.asyncio
     @pytest.mark.stability
@@ -99,8 +102,6 @@ class TestGracefulDegradation:
         client,
     ):
         """测试Stage失败时的处理"""
-        mock_registry_global = MagicMock()
-
         # Mock Stage 1 抛出异常
         mock_decomposition.side_effect = Exception("Stage 1 processing failed")
 
@@ -117,7 +118,9 @@ class TestGracefulDegradation:
         # 应该返回错误，但应该有明确的错误信息
         assert response.status_code in [500, 400]
         error_data = response.json()
-        assert "detail" in error_data or "detail" in str(error_data)
+        assert "request_id" in error_data
+        assert "error" in error_data
+        assert "code" in error_data["error"]
 
 
 # ============================================================

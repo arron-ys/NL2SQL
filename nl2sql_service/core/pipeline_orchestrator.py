@@ -6,6 +6,7 @@ Pipeline Orchestrator Module
 对应详细设计文档 2.3 的定义。
 """
 import asyncio
+import re
 from typing import Any, Dict, List, Union
 
 from config.pipeline_config import get_pipeline_config
@@ -25,6 +26,34 @@ from stages.stage3_validation import (
 from utils.log_manager import get_logger
 
 logger = get_logger(__name__)
+
+_METRIC_ID_RE = re.compile(r"\bMETRIC_[A-Z0-9_]+\b")
+
+
+def _extract_domain_from_permission_warning(detail: str) -> str:
+    """
+    从 Stage2 的 warning 格式中提取 domain：
+    "[PERMISSION_DENIED] ... (Domain: SALES)"
+    """
+    if not isinstance(detail, str):
+        return "UNKNOWN"
+    m = re.search(r"\(Domain:\s*([A-Za-z0-9_]+)\)", detail)
+    if not m:
+        return "UNKNOWN"
+    return m.group(1) or "UNKNOWN"
+
+
+def _sanitize_permission_denied_detail(detail: str) -> str:
+    """
+    对 PermissionDeniedError 的 detail 进行脱敏，避免把 METRIC_* ID 透传到 Stage6/前端。
+    """
+    if not isinstance(detail, str) or not detail:
+        return "权限不足"
+    # 注意：占位符不要包含 "METRIC_" 字样，避免前端/测试误判为泄露
+    sanitized = _METRIC_ID_RE.sub("[REDACTED]", detail)
+    if len(sanitized) > 300:
+        sanitized = sanitized[:300] + "..."
+    return sanitized
 
 
 # ============================================================
@@ -51,6 +80,13 @@ def _map_exception_to_pipeline_error(exception: Exception, stage: str) -> Pipeli
     
     if isinstance(exception, PermissionDeniedError):
         error_code = "PERMISSION_DENIED"
+        # 对外/给 Stage6：脱敏且给出明确域级语义（不暴露 METRIC_*）
+        domain_id = _extract_domain_from_permission_warning(str(exception))
+        return PipelineError(
+            stage=stage,
+            code=error_code,
+            message=f"您当前的角色没有权限访问查询中涉及的业务域数据（Domain: {domain_id}）。",
+        )
     elif isinstance(exception, MissingMetricError):
         error_code = "MISSING_METRIC"
     elif isinstance(exception, UnsupportedMultiFactError):
@@ -67,7 +103,9 @@ def _map_exception_to_pipeline_error(exception: Exception, stage: str) -> Pipeli
     return PipelineError(
         stage=stage,
         code=error_code,
-        message=str(exception)
+        message=_sanitize_permission_denied_detail(str(exception))
+        if error_code == "PERMISSION_DENIED"
+        else str(exception)
     )
 
 

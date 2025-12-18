@@ -47,6 +47,9 @@ path_marker_map = {
     "test_performance_internal.py": ["performance"],  # 内部性能测试（Mock 版）
     "test_quality_evaluation.py": ["quality", "slow"],
     "test_stage2_plan_normalization.py": ["unit"],
+    "test_stage3_permission_denied_on_warning.py": ["unit"],
+    "test_plan_permission_denied_soft_error.py": ["integration"],
+    "test_execute_permission_denied_goes_to_stage6.py": ["integration"],
     # Live 测试文件（使用完整相对路径避免冲突）
     "live/test_performance_live.py": ["performance", "slow", "live"],
     "live/test_e2e_live.py": ["e2e", "slow", "live"],

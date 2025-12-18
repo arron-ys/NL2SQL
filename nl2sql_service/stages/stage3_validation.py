@@ -378,6 +378,31 @@ async def validate_and_normalize_plan(
     
     if plan.intent in [PlanIntent.AGG, PlanIntent.TREND]:
         if not plan.metrics or len(plan.metrics) == 0:
+            # Permission Shadow Check 熔断：
+            # 如果 Stage2 在 warnings 中写入了 [PERMISSION_DENIED] 前缀，
+            # 则说明“指标为空”是由于 RBAC 拦截导致，应返回明确的权限错误，
+            # 而不是泛化的 MissingMetricError。
+            try:
+                warnings_list = plan.warnings if hasattr(plan, "warnings") and plan.warnings else []
+                permission_mark = next(
+                    (w for w in warnings_list if isinstance(w, str) and w.startswith("[PERMISSION_DENIED]")),
+                    None,
+                )
+            except Exception:
+                permission_mark = None
+
+            if permission_mark:
+                logger.error(
+                    "Plan metrics empty due to permission denied",
+                    extra={
+                        "intent": plan.intent.value,
+                        "request_id": context.request_id,
+                        "role_id": context.role_id,
+                        "permission_warning": permission_mark,
+                    },
+                )
+                raise PermissionDeniedError(permission_mark)
+
             # 详细记录为什么缺少 metrics（用于调试）
             logger.error(
                 f"Plan with intent {plan.intent.value} must have at least one metric",

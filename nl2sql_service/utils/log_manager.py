@@ -59,34 +59,22 @@ def _format_kv_pairs(pairs: List[Tuple[str, Any]]) -> str:
     return ", ".join(rendered)
 
 
-def _info_formatter(record: Dict[str, Any]) -> str:
-    """
-    INFO sink formatter（callable），避免在 format string 里用 {extra[xxx]} 引发 KeyError。
+BASE_FORMAT = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+    "<level>{level: <8}</level> | "
+    "[{extra[request_id]}] | "
+    "<cyan>{name}:{function}:{line}</cyan> - "
+    "<level>{message}</level>"
+)
 
-    规则：
-    - 固定字段：time、level、request_id、name:function:line、message
-    - 仅追加白名单耗时字段（存在才显示）
-    - WARNING/ERROR 也走此 formatter（仍只显示白名单，不输出长 extra）
-    """
-    extra = record.get("extra") or {}
-    request_id = extra.get("request_id", "-")
-    base = (
-        f"<green>{record['time']:YYYY-MM-DD HH:mm:ss}</green> | "
-        f"<level>{record['level'].name:<8}</level> | "
-        f"[{request_id}] | "
-        f"<cyan>{record['name']}:{record['function']}:{record['line']}</cyan> - "
-        f"<level>{record['message']}</level>"
-    )
-
-    latency_pairs: List[Tuple[str, Any]] = []
-    for k in _WHITELIST_LATENCY_FIELDS:
-        if k in extra:
-            latency_pairs.append((k, extra.get(k)))
-
-    if latency_pairs:
-        base += " | <dim>" + _format_kv_pairs(latency_pairs) + "</dim>"
-
-    return base + "\n"
+DEBUG_FORMAT = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+    "<level>{level: <8}</level> | "
+    "[{extra[request_id]}] | "
+    "<cyan>{name}:{function}:{line}</cyan> - "
+    "<level>{message}</level>"
+    " | <dim>{extra[extra_preview]}</dim>"
+)
 
 
 def _truncate_repr(value: Any, *, limit: int = 300) -> str:
@@ -100,24 +88,54 @@ def _truncate_repr(value: Any, *, limit: int = 300) -> str:
     return s[:limit] + "...(truncated)"
 
 
-def _debug_formatter(record: Dict[str, Any]) -> str:
+def _escape_braces(s: str) -> str:
+    """避免 loguru format string 解析 { } 导致异常。"""
+    return s.replace("{", "{{").replace("}", "}}")
+
+
+def _build_extra_preview(extra: Dict[str, Any]) -> str:
     """
-    DEBUG sink formatter（callable）：
-    - 追加“截断版 extra”（repr + try/except + 300 字符截断）
-    - 不递归遍历结构
+    构建 DEBUG 行尾 extra 预览：
+    - repr + 截断
+    - 额外对 { } 做 escape，防止 format 解析失败
+    - 不递归遍历结构（只做 repr）
     """
-    extra = record.get("extra") or {}
-    request_id = extra.get("request_id", "-")
-    base = (
-        f"<green>{record['time']:YYYY-MM-DD HH:mm:ss}</green> | "
-        f"<level>{record['level'].name:<8}</level> | "
-        f"[{request_id}] | "
-        f"<cyan>{record['name']}:{record['function']}:{record['line']}</cyan> - "
-        f"<level>{record['message']}</level>"
-    )
-    # DEBUG 行尾输出截断版 extra（仍可能很大，必须截断）
-    base += " | <dim>extra=" + _truncate_repr(extra, limit=300) + "</dim>"
-    return base + "\n"
+    return "extra=" + _escape_braces(_truncate_repr(extra, limit=300))
+
+
+def _patch_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Loguru patcher：在格式化前统一注入 request_id，并把白名单耗时字段追加到 message 末尾。
+    同时为 DEBUG 记录注入 extra_preview（安全截断）。
+    """
+    extra = record.get("extra")
+    if not isinstance(extra, dict):
+        extra = {}
+        record["extra"] = extra
+
+    # 统一注入 request_id，避免 {extra[request_id]} KeyError
+    if "request_id" not in extra:
+        extra["request_id"] = request_id_var.get()
+
+    # 追加白名单耗时字段（存在才显示），避免输出长 extra
+    latency_pairs: List[Tuple[str, Any]] = []
+    for k in _WHITELIST_LATENCY_FIELDS:
+        if k in extra:
+            latency_pairs.append((k, extra.get(k)))
+    if latency_pairs:
+        # 避免重复追加
+        suffix = _format_kv_pairs(latency_pairs)
+        if "stage1_ms=" not in record.get("message", "") and "llm_ms=" not in record.get("message", ""):
+            record["message"] = f"{record['message']} | <dim>{suffix}</dim>"
+
+    # DEBUG 行准备 extra_preview（仅用于 DEBUG sink）
+    if record.get("level") and getattr(record["level"], "name", "") == "DEBUG":
+        extra["extra_preview"] = _build_extra_preview(extra)
+    else:
+        # 确保 DEBUG_FORMAT 不会 KeyError（即使误用）
+        extra.setdefault("extra_preview", "")
+
+    return record
 
 # ============================================================
 # 核心配置函数
@@ -163,39 +181,29 @@ def configure_logger():
     # 移除默认的 handler
     logger.remove()
     
-    # 定义 filter 函数：在 handler 级别注入 request_id
-    def inject_request_id(record):
-        """在 handler 级别注入 request_id 到日志记录的 extra 字典中"""
-        # 确保 extra 字典存在
-        if "extra" not in record:
-            record["extra"] = {}
-        # 从 contextvars 获取 request_id 并注入
-        # 如果 extra 中已有 request_id，则不覆盖（允许显式设置）
-        if "request_id" not in record["extra"]:
-            record["extra"]["request_id"] = request_id_var.get()
-        return True  # 返回 True 表示不过滤这条日志
+    # patcher：统一注入 request_id / message 追加耗时 / debug extra_preview
+    logger.configure(patcher=_patch_record)
     
     # INFO sink：始终存在
-    # - level=LOG_LEVEL（INFO/WARNING/ERROR/...）
-    # - formatter 使用 callable，且仅输出白名单耗时字段
+    # 当 LOG_LEVEL=DEBUG 时，INFO sink 仍用 INFO（避免与 DEBUG sink 重复）
+    info_level = "INFO" if log_level == "DEBUG" else log_level
     logger.add(
         sys.stdout,
-        format=_info_formatter,
-        filter=inject_request_id,
-        level=log_level,
-        colorize=True,  # callable formatter 输出 loguru 标记，启用颜色
+        format=BASE_FORMAT,
+        level=info_level,
+        colorize=True,
         enqueue=True,
     )
 
     # DEBUG sink：仅当 LOG_LEVEL=DEBUG 时启用（且只接收 DEBUG，避免重复打印）
     if log_level == "DEBUG":
         def _debug_only(record: Dict[str, Any]) -> bool:
-            return record.get("level").name == "DEBUG"
+            return record.get("level") and record["level"].name == "DEBUG"
 
         logger.add(
             sys.stdout,
-            format=_debug_formatter,
-            filter=lambda record: inject_request_id(record) and _debug_only(record),
+            format=DEBUG_FORMAT,
+            filter=_debug_only,
             level="DEBUG",
             colorize=True,
             enqueue=True,

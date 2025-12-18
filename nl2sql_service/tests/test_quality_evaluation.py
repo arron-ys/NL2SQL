@@ -287,11 +287,19 @@ class TestPlanExplainability:
 
     @pytest.mark.asyncio
     @pytest.mark.quality
+    @patch("main.stage1_decomposition.process_request")
+    @patch("main.stage2_plan_generation.process_subquery")
+    @patch("main.stage3_validation.validate_and_normalize_plan")
     async def test_plan_metrics_match_question_semantics(
-        self, client, mock_registry
+        self, mock_validate, mock_generate_plan, mock_decomposition,
+        client, mock_registry
     ):
         """测试Plan中metrics与问题语义匹配"""
         import main
+        from datetime import date
+        from schemas.request import RequestContext, SubQueryItem
+        from schemas.plan import QueryPlan, PlanIntent
+        
         with patch.object(main, 'registry', mock_registry):
             test_cases = [
                 {
@@ -305,6 +313,34 @@ class TestPlanExplainability:
             ]
 
             for test_case in test_cases:
+                # Mock Stage 1: 返回子查询
+                mock_decomposition.return_value = MagicMock(
+                    request_context=RequestContext(
+                        user_id="user_001",
+                        role_id="ROLE_HR_HEAD",
+                        tenant_id="tenant_001",
+                        request_id="test_request",
+                        current_date=date.today(),
+                    ),
+                    sub_queries=[
+                        SubQueryItem(id="sq_1", description=test_case["question"]),
+                    ],
+                )
+                
+                # Mock Stage 2: 返回包含期望 metrics 的 Plan
+                mock_generate_plan.return_value = QueryPlan(
+                    intent=PlanIntent.AGG,
+                    metrics=normalize_metrics(test_case["expected_metrics"]),
+                    dimensions=[],
+                )
+                
+                # Mock Stage 3: 验证后的 Plan（与 Stage 2 相同）
+                mock_validate.return_value = QueryPlan(
+                    intent=PlanIntent.AGG,
+                    metrics=normalize_metrics(test_case["expected_metrics"]),
+                    dimensions=[],
+                )
+                
                 response = client.post(
                     "/nl2sql/plan",
                     json={
@@ -315,12 +351,14 @@ class TestPlanExplainability:
                     },
                 )
 
-                if response.status_code == 200:
-                    plan = response.json()
-                    metrics = [m.get("id") for m in plan.get("metrics", [])]
-                    # 验证metrics与问题语义匹配（简化检查）
-                    # 实际测试中应该使用更复杂的语义匹配逻辑
-                    assert len(metrics) > 0
+                assert response.status_code == 200
+                plan = response.json()
+                metrics = [m.get("id") for m in plan.get("metrics", [])]
+                # 验证metrics与问题语义匹配（简化检查）
+                # 实际测试中应该使用更复杂的语义匹配逻辑
+                assert len(metrics) > 0
+                # 验证返回的 metrics 包含期望的指标
+                assert any(m in test_case["expected_metrics"] for m in metrics)
 
 
 # ============================================================
