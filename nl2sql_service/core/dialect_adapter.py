@@ -121,10 +121,10 @@ class DialectAdapter:
             db_type: 数据库类型（"mysql" 或 "postgresql"），如果为 None 则从配置读取
         
         Returns:
-            List[str]: SQL 语句列表（通常只包含一条语句）
+            List[str]: SQL 语句列表
         
         Note:
-            - MySQL: 使用 max_execution_time（毫秒）
+            - MySQL: 使用 max_execution_time（毫秒）+ ANSI_QUOTES 模式
             - PostgreSQL: 使用 statement_timeout（毫秒）
         """
         # 如果没有指定 db_type，从配置读取
@@ -133,10 +133,18 @@ class DialectAdapter:
             config = get_pipeline_config()
             db_type = config.db_type.value
         
+        sqls = []
+        
+        # MySQL: 添加 ANSI_QUOTES 模式支持双引号作为标识符引用符
+        # 这样可以保证 PyPika 生成的 SQL 在两种方言下都能正常工作
+        if db_type.lower() == "mysql":
+            sqls.append("SET sql_mode = CONCAT(@@sql_mode, ',ANSI_QUOTES')")
+        
         # 获取对应数据库类型的超时 SQL
         timeout_sql = DialectAdapter.get_timeout_sql(db_type, timeout_ms)
+        sqls.append(timeout_sql)
         
-        return [timeout_sql]
+        return sqls
     
     @staticmethod
     def get_timeout_sql(db_type: str, timeout_ms: int) -> str:

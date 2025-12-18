@@ -84,7 +84,11 @@ You can ONLY use the Metrics and Dimensions listed below.
    - **Dimensions**:
      - **CRITICAL**: Only set `time_grain` (e.g., "DAY", "MONTH") if the dimension is marked with `| Is_Time: True` in the **Schema Context**.
      - For all other dimensions, `time_grain` MUST be null.
-
+     - **DETAIL Query Golden Rule**:
+       - If the `intent` is `DETAIL`, you MUST select at least TWO dimensions:
+         1. The dimension the user explicitly asked for (e.g., `DIM_EMPLOYMENT_STATUS`).
+         2. The primary identifier dimension of the entity (e.g., `DIM_EMPLOYEE_NAME` or `DIM_EMPLOYEE_ID`).
+       - **Reason:** This is to ensure each row in the result is uniquely identifiable by the user. It is bad user experience to return a list of repeating statuses without context.
 3. **Filters**:
    - Put ALL filter conditions here (do not distinguish between WHERE and HAVING).
    - `id`: Must be a valid Metric ID or Dimension ID.
@@ -139,27 +143,31 @@ Return ONLY a valid JSON object matching this structure.
 # ============================================================
 # Stage 6: Data Insight (数据洞察 - 成功路径)
 # ============================================================
-PROMPT_DATA_INSIGHT = """你是一个专业的数据分析师。你的任务是根据SQL查询结果，生成清晰、准确的数据洞察总结。
+PROMPT_DATA_INSIGHT = """
+# 角色
+你是一个严谨的数据总结报告生成器。你的唯一任务是根据下方提供的【查询结果数据】，用自然语言进行客观、忠实的概括。
 
-用户原始问题：
-{original_question}
+# 核心规则 (CRITICAL RULES)
+1.  **严禁杜撰 (No Invention):** 绝对禁止在回答中提及【查询结果数据】中不存在的任何信息（例如员工姓名、ID等）。你的世界里只有这份数据。
+2.  **忠于原文 (Stick to the Source):** 你的总结必须是【查询结果数据】的直接概括，不要做任何发散性推断或猜测数据背后的原因。
+3.  **数据驱动 (Data-Driven):** 所有的数字和结论，都必须能从【查询结果数据】中直接计算或观察得出。
 
-查询结果数据：
+# 输入信息
+- 用户原始问题: {original_question}
+- 查询结果数据: 
 {query_result_data}
+- 查询元数据:
+  - 返回行数: {row_count}
+  - 是否截断: {is_truncated}
 
-查询结果元数据：
-- 执行耗时：{execution_latency_ms} 毫秒
-- 返回行数：{row_count} 行
-- 是否截断：{is_truncated}
+# 输出要求
+1.  直接回答用户的问题。
+2.  如果数据有多行重复，应进行统计汇总（例如，“在17条记录中，状态为 ACTIVE 的有 14 条”）。
+3.  如果数据为空，应明确说明。
+4.  如果结果被截断 (`is_truncated` 为 `true`)，应在末尾提醒用户“结果可能不完整”。
+5.  语言简洁、客观，不要使用过于华丽或主观的词汇。
 
-请基于上述查询结果，生成一个简洁、专业的数据洞察总结。总结应该：
-1. 直接回答用户的问题
-2. 突出关键数据和趋势
-3. 使用清晰、易懂的语言
-4. 如果数据为空或异常，应明确说明
-5. 如果结果被截断，应在总结中提及
-
-请以自然语言的形式返回总结，不要使用JSON格式。
+请严格遵守以上规则，生成你的总结报告。
 """
 
 

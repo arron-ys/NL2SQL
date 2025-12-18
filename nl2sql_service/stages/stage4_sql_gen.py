@@ -16,6 +16,7 @@ from pypika import (
     Table,
     functions as fn
 )
+from pypika.dialects import MySQLQuery, PostgreSQLQuery
 from pypika.terms import Term
 
 from core.dialect_adapter import DialectAdapter
@@ -251,17 +252,28 @@ async def generate_sql(
     
     # Step 1: Initialization (FROM Clause)
     # 确定主实体
-    if not plan.metrics:
-        raise Stage4Error("Cannot generate SQL: plan has no metrics")
-    
-    primary_metric = plan.metrics[0]
-    metric_def = registry.get_metric_def(primary_metric.id)
-    if not metric_def:
-        raise Stage4Error(f"Metric definition not found: {primary_metric.id}")
-    
-    primary_entity_id = metric_def.get("entity_id")
-    if not primary_entity_id:
-        raise Stage4Error(f"Metric {primary_metric.id} has no entity_id")
+    primary_entity_id = None
+    if plan.metrics:
+        # 逻辑 1: 通过第一个 metric 确定实体 (适用于 AGG/TREND)
+        primary_metric = plan.metrics[0]
+        metric_def = registry.get_metric_def(primary_metric.id)
+        if not metric_def:
+            raise Stage4Error(f"Metric definition not found: {primary_metric.id}")
+        primary_entity_id = metric_def.get("entity_id")
+        if not primary_entity_id:
+            raise Stage4Error(f"Metric {primary_metric.id} has no entity_id")
+    elif plan.dimensions:
+        # 逻辑 2: 通过第一个 dimension 确定实体 (适用于 DETAIL)
+        primary_dimension = plan.dimensions[0]
+        dimension_def = registry.get_dimension_def(primary_dimension.id)
+        if not dimension_def:
+            raise Stage4Error(f"Dimension definition not found: {primary_dimension.id}")
+        primary_entity_id = dimension_def.get("entity_id")
+        if not primary_entity_id:
+            raise Stage4Error(f"Dimension {primary_dimension.id} has no entity_id")
+    else:
+        # 逻辑 3: 既无 metric 也无 dimension，这是真正的非法 Plan
+        raise Stage4Error("无法生成 SQL：查询计划中既没有指标也没有维度。")
     
     # 获取实体定义
     entity_def = registry.get_entity_def(primary_entity_id)
@@ -274,12 +286,27 @@ async def generate_sql(
         raise Stage4Error(f"Entity {primary_entity_id} has no semantic_view")
     
     # 创建 PyPika Table 和 Query 对象
+    # 根据数据库类型选择对应的 Query 类，以生成正确的 SQL 方言
     table = Table(semantic_view)
-    query = Query.from_(table)
+    
+    db_type_lower = db_type.lower()
+    if db_type_lower == "mysql":
+        # MySQL 使用反引号 `table_name`
+        query = MySQLQuery.from_(table)
+    elif db_type_lower == "postgresql":
+        # PostgreSQL 使用双引号 "table_name"
+        query = PostgreSQLQuery.from_(table)
+    else:
+        # 默认使用通用 Query（PostgreSQL 风格）
+        query = Query.from_(table)
     
     logger.debug(
         f"Initialized query from entity {primary_entity_id}",
-        extra={"semantic_view": semantic_view}
+        extra={
+            "semantic_view": semantic_view,
+            "db_type": db_type,
+            "query_class": query.__class__.__name__
+        }
     )
     
     # Step 2: Projections (SELECT Clause)
@@ -420,14 +447,17 @@ async def generate_sql(
     # 时间范围过滤
     if plan.time_range:
         # 获取时间字段
-        # 使用第一个指标的 default_time 配置
-        primary_metric_def = registry.get_metric_def(plan.metrics[0].id)
+        # 优先从 metric 获取，其次从 entity 获取
         time_field_id = None
-        if primary_metric_def:
-            time_field_id = primary_metric_def.get("default_time", {}).get("time_field_id")
+        
+        if plan.metrics:
+            # 有 metrics：优先使用第一个 metric 的 default_time 配置
+            primary_metric_def = registry.get_metric_def(plan.metrics[0].id)
+            if primary_metric_def:
+                time_field_id = primary_metric_def.get("default_time", {}).get("time_field_id")
         
         if not time_field_id:
-            # 尝试从实体获取默认时间字段
+            # 降级：从实体获取默认时间字段（适用于 DETAIL 查询或 metric 无配置的情况）
             time_field_id = entity_def.get("default_time_field_id")
         
         if time_field_id:
