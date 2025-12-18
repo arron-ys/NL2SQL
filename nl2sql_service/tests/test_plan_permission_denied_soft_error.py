@@ -53,7 +53,7 @@ def test_plan_permission_denied_returns_200_and_is_sanitized():
                             "tenant_id": "t1",
                             "include_trace": False,
                         },
-                        headers={"X-Trace-ID": "test-trace-001"},
+                        headers={"Trace-ID": "test-trace-001"},
                     )
 
     assert resp.status_code == 200

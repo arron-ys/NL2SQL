@@ -581,8 +581,10 @@ async def validate_and_normalize_plan(
         validated_plan = QueryPlan(**plan_dict)
         
         stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
+        stage3_seconds = stage3_ms / 1000.0
         logger.info(
-            "Stage 3 completed successfully",
+            "Stage 3 completed successfully（Stage3耗时：{}s）",
+            round(stage3_seconds, 1),
             extra={
                 "intent": validated_plan.intent.value,
                 "metrics_count": len(validated_plan.metrics),

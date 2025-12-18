@@ -323,6 +323,16 @@
 					"name": "03_Overlong Text",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"var long_str = new Array(5001).join('A');",
+									"pm.environment.set('long_question', long_str);"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -343,7 +353,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"question\": \"" + "A".repeat(5000) + "\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
+							"raw": "{\n    \"question\": \"{{long_question}}\",\n    \"user_id\": \"{{test_user_id}}\",\n    \"role_id\": \"{{test_role_id}}\",\n    \"tenant_id\": \"{{test_tenant_id}}\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"

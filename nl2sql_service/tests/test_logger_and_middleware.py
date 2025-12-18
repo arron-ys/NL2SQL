@@ -2,8 +2,8 @@
 Request ID Middleware and Logger Test Suite
 
 测试 Request ID Middleware 的正确性，包括：
-- Header 优先级：X-Trace-ID > X-Request-ID > 自动生成
-- 响应头回写：无论成功还是 422，都要回写 X-Trace-ID 和 X-Request-ID
+- Header 读取：Trace-ID > 自动生成
+- 响应头回写：无论成功还是 422，都要回写 Trace-ID
 - 日志链路：验证 contextvar 在日志中正确传递 request_id
 """
 import io
@@ -63,87 +63,46 @@ def test_generate_ids_when_no_headers(client):
     测试：不带 header 时，自动生成 request_id 并回写到响应头
     
     断言：
-    - response.headers 同时包含 X-Trace-ID 和 X-Request-ID
-    - 两者相等
+    - response.headers 包含 Trace-ID
     - 以 "req-" 开头
     """
     response = client.get("/")
     
     assert response.status_code == 200
     
-    # 断言响应头包含 X-Trace-ID 和 X-Request-ID
-    assert "X-Trace-ID" in response.headers
-    assert "X-Request-ID" in response.headers
-    
-    # 断言两者相等
-    trace_id = response.headers["X-Trace-ID"]
-    request_id = response.headers["X-Request-ID"]
-    assert trace_id == request_id
+    # 断言响应头包含 Trace-ID
+    assert "Trace-ID" in response.headers
     
     # 断言以 "req-" 开头
+    trace_id = response.headers["Trace-ID"]
     assert trace_id.startswith("req-")
 
 
 def test_echo_trace_id(client):
     """
-    测试：带 X-Trace-ID header 时，回写相同的值
+    测试：带 Trace-ID header 时，回写相同的值
     
     断言：
-    - response.headers["X-Trace-ID"] == "trace-test-001"
-    - response.headers["X-Request-ID"] == "trace-test-001"
+    - response.headers["Trace-ID"] == "trace-test-001"
     """
     response = client.get(
         "/",
-        headers={"X-Trace-ID": "trace-test-001"}
+        headers={"Trace-ID": "trace-test-001"}
     )
     
     assert response.status_code == 200
     
     # 断言响应头回写了相同的值
-    assert response.headers["X-Trace-ID"] == "trace-test-001"
-    assert response.headers["X-Request-ID"] == "trace-test-001"
+    assert response.headers["Trace-ID"] == "trace-test-001"
 
 
-def test_echo_request_id(client):
-    """
-    测试：只带 X-Request-ID header 时（没有 X-Trace-ID），回写相同的值
-    """
-    response = client.get(
-        "/",
-        headers={"X-Request-ID": "request-test-002"}
-    )
-    
-    assert response.status_code == 200
-    
-    # 断言响应头回写了相同的值
-    assert response.headers["X-Trace-ID"] == "request-test-002"
-    assert response.headers["X-Request-ID"] == "request-test-002"
 
 
-def test_trace_id_priority_over_request_id(client):
-    """
-    测试：X-Trace-ID 优先级高于 X-Request-ID
-    
-    当同时提供两个 header 时，应该优先使用 X-Trace-ID。
-    """
-    response = client.get(
-        "/",
-        headers={
-            "X-Trace-ID": "trace-priority-001",
-            "X-Request-ID": "request-priority-002"
-        }
-    )
-    
-    assert response.status_code == 200
-    
-    # 断言优先使用 X-Trace-ID
-    assert response.headers["X-Trace-ID"] == "trace-priority-001"
-    assert response.headers["X-Request-ID"] == "trace-priority-001"
 
 
 def test_422_still_has_headers(client):
     """
-    测试：422 错误时，响应头仍然包含 X-Trace-ID 和 X-Request-ID
+    测试：422 错误时，响应头仍然包含 Trace-ID
     
     发送一个无效的请求体，触发 422 验证错误。
     """
@@ -156,31 +115,24 @@ def test_422_still_has_headers(client):
     # 断言状态码是 422
     assert response.status_code == 422
     
-    # 断言响应头仍然包含 X-Trace-ID 和 X-Request-ID
-    assert "X-Trace-ID" in response.headers
-    assert "X-Request-ID" in response.headers
-    
-    # 断言两者相等
-    trace_id = response.headers["X-Trace-ID"]
-    request_id = response.headers["X-Request-ID"]
-    assert trace_id == request_id
+    # 断言响应头仍然包含 Trace-ID
+    assert "Trace-ID" in response.headers
 
 
 def test_422_with_trace_id_header(client):
     """
-    测试：422 错误时，如果提供了 X-Trace-ID，应该回写相同的值
+    测试：422 错误时，如果提供了 Trace-ID，应该回写相同的值
     """
     response = client.post(
         "/nl2sql/plan",
         json={},
-        headers={"X-Trace-ID": "trace-422-test"}
+        headers={"Trace-ID": "trace-422-test"}
     )
     
     assert response.status_code == 422
     
     # 断言响应头回写了相同的值
-    assert response.headers["X-Trace-ID"] == "trace-422-test"
-    assert response.headers["X-Request-ID"] == "trace-422-test"
+    assert response.headers["Trace-ID"] == "trace-422-test"
 
 
 # ============================================================
@@ -225,10 +177,10 @@ def test_logger_captures_request_id_no_header(client, log_capture):
 
 def test_logger_captures_request_id_with_trace_id(client, log_capture):
     """
-    测试：带 X-Trace-ID header 时，日志中能捕获到正确的 request_id
+    测试：带 Trace-ID header 时，日志中能捕获到正确的 request_id
     
     1. 添加临时路由用于测试日志
-    2. 调用该路由，带 X-Trace-ID header
+    2. 调用该路由，带 Trace-ID header
     3. 断言捕获的日志包含 "[trace-test-001]"
     """
     # 添加临时测试路由
@@ -238,10 +190,10 @@ def test_logger_captures_request_id_with_trace_id(client, log_capture):
         return {"status": "ok"}
     
     try:
-        # 调用测试路由（带 X-Trace-ID header）
+        # 调用测试路由（带 Trace-ID header）
         response = client.get(
             "/__log_test_trace",
-            headers={"X-Trace-ID": "trace-test-001"}
+            headers={"Trace-ID": "trace-test-001"}
         )
         
         assert response.status_code == 200
@@ -272,11 +224,11 @@ def test_logger_contextvar_persistence(client, log_capture):
         return {"status": "ok"}
     
     try:
-        # 调用测试路由（带 X-Trace-ID header）
+        # 调用测试路由（带 Trace-ID header）
         trace_id = "trace-multiple-test"
         response = client.get(
             "/__log_test_multiple",
-            headers={"X-Trace-ID": trace_id}
+            headers={"Trace-ID": trace_id}
         )
         
         assert response.status_code == 200

@@ -51,7 +51,7 @@ def test_plan_error_response_contains_code_stage_request_id_and_is_sanitized():
                         "tenant_id": "t1",
                         "include_trace": False,
                     },
-                    headers={"X-Trace-ID": "test-trace-001"},
+                    headers={"Trace-ID": "test-trace-001"},
                 )
 
     assert resp.status_code == 500

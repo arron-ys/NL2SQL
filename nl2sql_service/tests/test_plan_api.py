@@ -434,8 +434,8 @@ class TestErrorContract:
         """验证错误响应包含 request_id（通过响应头）"""
         response = client.post("/nl2sql/plan", json={})
 
-        # 验证响应头包含 X-Trace-ID 或 X-Request-ID
-        assert "X-Trace-ID" in response.headers or "X-Request-ID" in response.headers
+        # 验证响应头包含 Trace-ID
+        assert "Trace-ID" in response.headers
 
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")

@@ -139,10 +139,10 @@ async def request_id_middleware(request: Request, call_next):
     请求 ID 中间件
     
     从请求 header 中读取或生成 request_id，并注入到日志上下文中。
-    支持从上游透传 X-Trace-ID（优先）或 X-Request-ID（兼容）。
+    支持从上游透传 Trace-ID。
     """
-    # 从 header 读取 ID：优先 X-Trace-ID，其次 X-Request-ID
-    request_id = request.headers.get("X-Trace-ID") or request.headers.get("X-Request-ID")
+    # 从 header 读取 ID：Trace-ID
+    request_id = request.headers.get("Trace-ID")
     
     # 如果不存在，则生成新的 ID（沿用项目原有格式：req-YYYYMMDDHHMMSS-xxxxxxxx）
     if not request_id:
@@ -154,9 +154,8 @@ async def request_id_middleware(request: Request, call_next):
     # 处理请求
     response = await call_next(request)
     
-    # 在响应 header 中写回：至少写 X-Trace-ID，并可同时写 X-Request-ID（值相同）
-    response.headers["X-Trace-ID"] = request_id
-    response.headers["X-Request-ID"] = request_id
+    # 在响应 header 中写回 Trace-ID
+    response.headers["Trace-ID"] = request_id
     
     return response
 

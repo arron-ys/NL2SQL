@@ -786,8 +786,10 @@ async def process_subquery(
         )
 
         llm_ms = int((time.perf_counter() - llm_start) * 1000)
+        llm_seconds = llm_ms / 1000.0
         logger.info(
-            "Stage 2 LLM completed",
+            "Stage 2 LLM completed（LLM耗时：{}s）",
+            round(llm_seconds, 1),
             extra={
                 "request_id": context.request_id,
                 "sub_query_id": sub_query.id,

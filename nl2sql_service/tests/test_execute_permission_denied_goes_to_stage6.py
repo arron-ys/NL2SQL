@@ -63,7 +63,7 @@ def test_execute_permission_denied_is_answered_by_stage6_and_sanitized():
                             "tenant_id": "t1",
                             "include_trace": False,
                         },
-                        headers={"X-Trace-ID": "test-trace-003"},
+                        headers={"Trace-ID": "test-trace-003"},
                     )
 
     assert resp.status_code == 200

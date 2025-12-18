@@ -229,6 +229,27 @@ async def process_request(
             }
         )
     
+    # INFO：输出拆解结果（用户可见）
+    logger.info(
+        "【Stage 1 拆解结果】共拆解为 {} 个子查询",
+        len(normalized_sub_queries),
+        extra={
+            "request_id": request_id,
+            "sub_query_count": len(normalized_sub_queries),
+        },
+    )
+    # 逐个输出每个子查询的 description
+    for idx, sq in enumerate(normalized_sub_queries, 1):
+        logger.info(
+            "  {}. {}",
+            idx,
+            sq.description,
+            extra={
+                "request_id": request_id,
+                "sub_query_id": sq.id,
+            },
+        )
+    
     # Step 5: Assemble Final Output
     query_request_description = QueryRequestDescription(
         request_context=request_context,
