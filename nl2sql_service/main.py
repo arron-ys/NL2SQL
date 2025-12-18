@@ -11,6 +11,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 # ============================================================
@@ -82,7 +83,17 @@ async def lifespan(app: FastAPI):
         registry = await SemanticRegistry.get_instance()
         
         # 获取 YAML 文件路径（从环境变量或使用默认值）
-        yaml_path = os.getenv("SEMANTICS_YAML_PATH", "semantics")
+        env_yaml_path = os.getenv("SEMANTICS_YAML_PATH")
+        if not env_yaml_path:
+            # 默认路径：nl2sql_service/semantics（相对于 main.py 所在目录）
+            yaml_path = str(Path(__file__).parent / "semantics")
+        else:
+            # 如果是相对路径，转换为相对于 main.py 所在目录的绝对路径
+            yaml_path_obj = Path(env_yaml_path)
+            if not yaml_path_obj.is_absolute():
+                yaml_path = str(Path(__file__).parent / env_yaml_path)
+            else:
+                yaml_path = env_yaml_path
         
         # 初始化并加载 YAML 配置
         await registry.initialize(yaml_path)
@@ -271,6 +282,7 @@ class DebugResponse(BaseModel):
     调试模式响应模型
     
     包含最终答案和调试信息。
+    纯嵌套结构：只有 answer 和 debug_info 两个字段。
     """
     answer: FinalAnswer = Field(
         ...,
@@ -559,7 +571,7 @@ async def health_check():
     return {"status": "ok"}
 
 
-@app.post("/nl2sql/execute")
+@app.post("/nl2sql/execute", response_model=Union[FinalAnswer, DebugResponse])
 async def execute_nl2sql(
     request: QueryRequest
 ) -> Union[FinalAnswer, DebugResponse]:
@@ -620,8 +632,8 @@ async def execute_nl2sql(
             # 调试模式：需要收集中间产物
             debug_info = await _execute_with_debug(query_desc, registry, request.question)
             
-            # 返回调试响应
-            debug_response = DebugResponse(
+            # 返回调试响应（纯嵌套结构）
+            return DebugResponse(
                 answer=debug_info["final_answer"],
                 debug_info=DebugInfo(
                     sub_queries=[sq.model_dump() for sq in query_desc.sub_queries],
@@ -630,9 +642,6 @@ async def execute_nl2sql(
                     sql_queries=debug_info["sql_queries"]
                 )
             )
-            
-            # 返回调试响应
-            return debug_response
         
         # 正常模式：执行完整流水线
         # Stage 2-5: Pipeline Orchestration

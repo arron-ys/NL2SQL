@@ -4,10 +4,11 @@ Pytest Configuration and Auto-Marking
 根据测试文件路径自动为测试项添加 marker，避免手动标记遗漏。
 强制校验：每个测试项必须至少拥有一个分层 marker。
 
-注意：.env 文件只在标记为 'live' 的测试中加载，避免非 live 测试使用真实 API（有 token 成本）。
+注意：.env 文件只在标记为 'live' 或 'evaluation' 的测试中加载，避免非 live 测试使用真实 API（有 token 成本）。
 """
 import os
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,178 @@ _nl2sql_service_dir = Path(__file__).parent.parent.resolve()
 # 将 nl2sql_service 目录添加到 sys.path（如果尚未添加）
 if str(_nl2sql_service_dir) not in sys.path:
     sys.path.insert(0, str(_nl2sql_service_dir))
+
+
+# ============================================================
+# Dotenv Loading Configuration
+# ============================================================
+
+
+def _should_load_dotenv(config) -> bool:
+    """
+    判断是否应该加载 .env 文件
+    
+    触发条件（满足任一即可）：
+    1. 命令行参数 --load-dotenv
+    2. markexpr 包含 live 或 evaluation
+    3. 运行路径包含 tests/live 或 tests/evaluation
+    """
+    # 条件 1: 显式传参 --load-dotenv
+    try:
+        if config.getoption("--load-dotenv", default=False):
+            return True
+    except (ValueError, AttributeError):
+        pass
+    
+    # 条件 2: markexpr 包含 live 或 evaluation
+    try:
+        markexpr = config.getoption("-m", default=None) or config.getoption("--markexpr", default=None)
+        if markexpr:
+            markexpr_lower = markexpr.lower()
+            if "live" in markexpr_lower or "evaluation" in markexpr_lower:
+                return True
+    except (ValueError, AttributeError):
+        pass
+    
+    # 条件 3: 运行路径包含 tests/live 或 tests/evaluation
+    # 获取命令行参数（从 config.args 或通过 getoption）
+    args_to_check = []
+    try:
+        # 尝试从 file_or_dir 选项获取
+        file_or_dir = config.getoption("file_or_dir", default=[])
+        if file_or_dir:
+            args_to_check.extend(file_or_dir)
+    except (ValueError, AttributeError):
+        pass
+    
+    # 尝试从 config.args 获取（pytest 内部属性）
+    if hasattr(config, "args") and config.args:
+        args_to_check.extend(config.args)
+    
+    # 检查命令行参数中的路径
+    for arg in args_to_check:
+        arg_str = str(arg).replace("\\", "/").lower()
+        # 兼容 Windows 和 Linux 路径分隔符
+        # 检查是否包含 tests/live 或 tests/evaluation（包括子目录）
+        if "tests/live" in arg_str or "tests\\live" in arg_str:
+            return True
+        if "tests/evaluation" in arg_str or "tests\\evaluation" in arg_str:
+            return True
+    
+    return False
+
+
+def _find_env_file() -> Path:
+    """
+    查找 .env 文件
+    
+    查找顺序（按存在优先）：
+    1. <repo_root>/nl2sql_service/.env
+    2. <repo_root>/.env
+    
+    返回找到的 .env 文件路径，如果都不存在则返回 None。
+    """
+    # 获取 repo 根目录（nl2sql_service 的父目录）
+    repo_root = _nl2sql_service_dir.parent
+    
+    # 候选路径列表
+    candidates = [
+        _nl2sql_service_dir / ".env",  # nl2sql_service/.env
+        repo_root / ".env",  # repo_root/.env
+    ]
+    
+    # 返回第一个存在的文件
+    for env_file in candidates:
+        if env_file.exists() and env_file.is_file():
+            return env_file
+    
+    return None
+
+
+# 全局标志：标记 .env 是否已加载
+_env_loaded = False
+
+
+def _load_dotenv_if_needed(config, check_paths_from_items=None):
+    """
+    如果需要，加载 .env 文件（避免重复加载）
+    
+    Args:
+        config: pytest config 对象
+        check_paths_from_items: 可选的测试项列表，用于路径检测
+    """
+    global _env_loaded
+    
+    if _env_loaded:
+        return
+    
+    should_load = False
+    
+    # 检查触发条件
+    if _should_load_dotenv(config):
+        should_load = True
+    elif check_paths_from_items:
+        # 补充检查：从测试项中检查路径
+        for item in check_paths_from_items:
+            if hasattr(item, "path") and item.path:
+                item_path_str = str(item.path).replace("\\", "/").lower()
+                if "tests/live" in item_path_str or "tests/evaluation" in item_path_str:
+                    should_load = True
+                    break
+            # 也检查 nodeid
+            nodeid_str = item.nodeid.replace("\\", "/").lower()
+            if "tests/live" in nodeid_str or "tests/evaluation" in nodeid_str:
+                should_load = True
+                break
+    
+    if should_load:
+        env_file = _find_env_file()
+        if env_file:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(dotenv_path=env_file, override=False)
+                _env_loaded = True
+            except ImportError:
+                warnings.warn(
+                    "python-dotenv is not installed. Cannot load .env file.",
+                    UserWarning
+                )
+            except Exception as e:
+                warnings.warn(
+                    f"Failed to load .env file from {env_file}: {e}",
+                    UserWarning
+                )
+        else:
+            # 满足触发条件但找不到 .env 文件，只打印 warning，不报错
+            warnings.warn(
+                ".env file not found. Expected locations:\n"
+                f"  1. {_nl2sql_service_dir / '.env'}\n"
+                f"  2. {_nl2sql_service_dir.parent / '.env'}\n"
+                "Live/evaluation tests may be skipped if API keys are not set via environment variables.",
+                UserWarning
+            )
+            _env_loaded = True  # 标记为已处理，避免重复警告
+
+
+def pytest_addoption(parser):
+    """
+    添加命令行选项
+    """
+    parser.addoption(
+        "--load-dotenv",
+        action="store_true",
+        default=False,
+        help="Force loading .env file regardless of test markers or paths"
+    )
+
+
+def pytest_configure(config):
+    """
+    在测试收集前配置 pytest
+    
+    根据触发条件加载 .env 文件。
+    """
+    _load_dotenv_if_needed(config)
 
 
 # 定义必须至少拥有 1 个的"分层 marker"集合
@@ -60,9 +233,11 @@ path_marker_map = {
     "test_plan_permission_denied_soft_error.py": ["integration"],
     "test_execute_permission_denied_goes_to_stage6.py": ["integration"],
     # Live 测试文件（使用完整相对路径避免冲突）
-    "live/test_performance_live.py": ["performance", "slow", "live"],
     "live/test_e2e_live.py": ["e2e", "slow", "live"],
     "live/test_db_connection.py": ["integration", "live"],
+    "live/test_api_execute.py": ["integration", "live"],
+    # Evaluation 测试文件（性能评估）
+    "evaluation/test_performance_live.py": ["performance", "slow", "live"],
 }
 
 
@@ -142,6 +317,9 @@ def pytest_collection_modifyitems(config, items):
     3. 自动打标后，强制校验每个 item 必须至少拥有一个分层 marker
     4. 对于 test_ 开头的文件，如果既不在 map 中又没有任何分层 marker，则报错
     """
+    # 补充检查：如果之前没有加载 .env，现在根据测试项路径再次检查
+    _load_dotenv_if_needed(config, check_paths_from_items=items)
+    
     # 收集所有未归类的测试项（用于错误报告）
     unmarked_items = []
     
@@ -229,3 +407,51 @@ def pytest_collection_modifyitems(config, items):
         error_lines.append("=" * 80 + "\n")
         
         raise pytest.UsageError("".join(error_lines))
+
+
+# ============================================================
+# Standard Test Client Fixtures
+# ============================================================
+
+from fastapi.testclient import TestClient
+from httpx import AsyncClient, ASGITransport
+
+# 延迟导入 app，避免循环依赖
+import sys
+from pathlib import Path as PathLib
+_nl2sql_service_dir = PathLib(__file__).parent.parent.resolve()
+if str(_nl2sql_service_dir) not in sys.path:
+    sys.path.insert(0, str(_nl2sql_service_dir))
+
+
+@pytest.fixture
+def client():
+    """
+    同步 TestClient fixture
+    
+    使用 context manager 确保 FastAPI lifespan 事件正确触发。
+    适用于同步测试。
+    """
+    from main import app
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture(scope="function")
+async def async_client():
+    """
+    异步 AsyncClient fixture
+    
+    使用 ASGITransport 和 AsyncClient 确保 FastAPI lifespan 事件正确触发。
+    适用于异步测试（@pytest.mark.asyncio）。
+    
+    注意：需要显式处理 lifespan 事件，确保 startup 和 shutdown 被调用。
+    """
+    from main import app
+    from contextlib import asynccontextmanager
+    
+    # 手动触发 lifespan startup
+    async with app.router.lifespan_context(app):
+        # 在 lifespan 上下文中创建 client
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
+            yield ac

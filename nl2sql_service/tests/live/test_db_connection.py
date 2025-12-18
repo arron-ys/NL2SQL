@@ -7,13 +7,13 @@ Database Connection Test Suite
 - 实际连接测试（执行简单查询）
 
 需要真实的数据库配置（从 .env 文件读取），如果配置不可用则跳过测试。
+
+注意：.env 文件由 tests/conftest.py 统一管理，在运行 live 测试时会自动加载。
 """
 import os
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncEngine
 
@@ -23,7 +23,7 @@ from config.pipeline_config import get_pipeline_config, SupportedDialects
 
 
 # ============================================================
-# Skip Conditions (方案1：健壮的环境变量加载)
+# Skip Conditions
 # ============================================================
 
 def _should_skip_db_tests():
@@ -32,17 +32,9 @@ def _should_skip_db_tests():
     
     如果数据库配置缺失或为占位符值，则跳过测试。
     
-    注意：这个函数在 pytest 收集阶段执行（@pytest.mark.skipif），此时 fixture 还没运行，
-    所以需要手动加载 .env 文件。
+    注意：.env 文件由 tests/conftest.py 统一管理，在运行 live 测试时会自动加载。
+    此函数在 pytest 收集阶段执行（@pytest.mark.skipif），此时 .env 应该已经被加载。
     """
-    # 获取项目根目录（nl2sql_service 目录）- 使用绝对路径
-    project_root = Path(__file__).parent.parent.parent
-    env_file = project_root / ".env"
-    
-    # 【方案1改进】只要 .env 文件存在，就加载（不覆盖已有环境变量）
-    if env_file.exists():
-        load_dotenv(dotenv_path=env_file, override=False)
-    
     # 检查必需配置是否存在
     db_host = os.getenv("DB_HOST", "")
     db_port = os.getenv("DB_PORT", "")

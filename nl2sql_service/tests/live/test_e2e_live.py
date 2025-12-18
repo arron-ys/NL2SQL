@@ -171,6 +171,17 @@ class TestE2ELive:
         assert "answer" in result, "Debug response missing 'answer' field"
         assert "debug_info" in result, "Debug response missing 'debug_info' field"
         
+        # 【反扁平断言】：防止回归到顶层扁平结构
+        assert "answer_text" not in result, (
+            "Debug response should NOT have 'answer_text' at top level (must be nested in 'answer')"
+        )
+        assert "data_list" not in result, (
+            "Debug response should NOT have 'data_list' at top level (must be nested in 'answer')"
+        )
+        assert "status" not in result, (
+            "Debug response should NOT have 'status' at top level (must be nested in 'answer')"
+        )
+        
         # 验证调试信息结构
         debug_info = result.get("debug_info", {})
         assert "sub_queries" in debug_info, "Debug info missing 'sub_queries'"
