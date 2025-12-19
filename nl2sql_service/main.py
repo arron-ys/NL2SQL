@@ -139,9 +139,17 @@ async def lifespan(app: FastAPI):
     global registry, healthcheck_task
     
     # ========== 启动逻辑 ==========
-    logger.info("Starting NL2SQL Service...")
+    logger.info("NL2SQL 服务启动中...")
     
     try:
+        # 【双重保险】显式初始化 AIClient，确保在服务启动的第一时间暴露配置错误（Fail Fast）
+        # 这可以确保：
+        # 1. 环境变量已正确加载
+        # 2. 所有必需的 provider 都已初始化
+        # 3. 如果配置有问题，在启动阶段就能发现，而不是等到第一个请求
+        from core.ai_client import get_ai_client
+        ai_client = get_ai_client()
+        
         # 获取语义注册表单例
         registry = await SemanticRegistry.get_instance()
         
@@ -161,17 +169,11 @@ async def lifespan(app: FastAPI):
         # 初始化并加载 YAML 配置
         await registry.initialize(yaml_path)
         
-        logger.info(
-            "Semantic registry initialized successfully",
-            extra={"yaml_path": yaml_path}
-        )
-        
         # 启动健康检查后台任务（长期：连接健康检查 + 自愈）
         healthcheck_task = asyncio.create_task(healthcheck_loop())
-        logger.info("Healthcheck background task started")
 
         # 服务启动完成提示（便于前端/运维快速定位启动状态）
-        logger.info("【服务已经完全启动，等待前端发送请求】")
+        logger.info("✓ NL2SQL 服务已启动，等待请求")
     except Exception as e:
         logger.error(
             "Failed to initialize semantic registry",
@@ -741,6 +743,9 @@ async def execute_nl2sql(
     Raises:
         HTTPException: 当处理失败时抛出
     """
+
+    print("🔥 I AM HERE! I RECEIVED THE REQUEST! 🔥")  # 用 print，别用 logger，防止 logger 配置问题
+
     logger.info(
         "Received NL2SQL request",
         extra={
@@ -768,14 +773,6 @@ async def execute_nl2sql(
         # 获取当前请求 ID（由 middleware 或 Stage 1 设置）
         actual_request_id = query_desc.request_context.request_id
         
-        logger.info(
-            "Stage 1 completed",
-            extra={
-                "request_id": actual_request_id,
-                "sub_query_count": len(query_desc.sub_queries)
-            }
-        )
-        
         # 处理调试模式
         if request.include_trace:
             # 调试模式：需要收集中间产物
@@ -799,14 +796,6 @@ async def execute_nl2sql(
             registry=registry
         )
         
-        logger.info(
-            "Pipeline orchestration completed",
-            extra={
-                "request_id": actual_request_id,
-                "batch_count": len(batch_results)
-            }
-        )
-        
         # Stage 6: Answer Generation
         final_answer = await stage6_answer.generate_final_answer(
             batch_results=batch_results,
@@ -814,10 +803,11 @@ async def execute_nl2sql(
         )
         
         logger.info(
-            "NL2SQL request completed successfully",
+            f"✓ 请求完成 | 状态: {final_answer.status.value} | 子查询: {len(batch_results)} | 答案长度: {len(final_answer.answer_text)}",
             extra={
                 "request_id": actual_request_id,
                 "status": final_answer.status.value,
+                "batch_count": len(batch_results),
                 "answer_length": len(final_answer.answer_text)
             }
         )

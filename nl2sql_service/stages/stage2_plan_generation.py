@@ -82,19 +82,19 @@ async def _llm_wait_heartbeat(
             break
         except asyncio.TimeoutError:
             waited += interval_seconds
-            logger.info(
-                "【Stage 2 等待 LLM 返回PLAN（网络/推理中），已等待 {} 秒】",
-                waited,
-                extra={
-                    "request_id": request_id,
-                    "sub_query_id": sub_query_id,
-                    "provider": provider_hint,
-                    "model": model_hint,
-                    "prompt_chars": prompt_chars,
-                    "schema_context_chars": schema_context_chars,
-                    "llm_wait_s": waited,
-                },
-            )
+            # 20秒后才开始打印，避免快速响应时的噪音
+            if waited >= 20:
+                provider_info = f" | Provider: {provider_hint}" if provider_hint else ""
+                logger.info(
+                    f"等待 LLM 响应... {waited}s{provider_info}",
+                    extra={
+                        "request_id": request_id,
+                        "sub_query_id": sub_query_id,
+                        "provider": provider_hint,
+                        "model": model_hint,
+                        "llm_wait_s": waited,
+                    },
+                )
 
 
 def _format_schema_context(terms: List[str], registry: SemanticRegistry) -> str:
@@ -652,10 +652,10 @@ async def process_subquery(
     # - RAG 在 RBAC 过滤后经常会召回“可访问但不相关”的噪音指标，导致 final_metrics 非空，从而漏判。
     # - 真正需要定性的时机是：LLM 输出的 plan 在 AGG/TREND 下 metrics 为空。
     
-    # INFO：仅摘要 + 耗时（Flow & Summary）
+    # RAG检索完成，记录关键指标
     rag_ms = int((time.perf_counter() - stage2_start) * 1000)
-    logger.info(
-        "Stage 2 RAG completed",
+    logger.debug(
+        f"RAG 检索完成 | 术语: {len(final_terms)} (指标: {len(final_metrics)}, 维度: {len(final_dimensions)}) | 耗时: {rag_ms}ms",
         extra={
             "request_id": context.request_id,
             "sub_query_id": sub_query.id,
@@ -789,23 +789,16 @@ async def process_subquery(
         )
 
         llm_ms = int((time.perf_counter() - llm_start) * 1000)
-        llm_seconds = llm_ms / 1000.0
-        logger.info(
-            "Stage 2 LLM completed（LLM耗时：{}s）",
-            round(llm_seconds, 1),
+        
+        # 详细记录 LLM 返回的原始计划
+        logger.debug(
+            f"LLM 调用完成 | 耗时: {llm_ms}ms",
             extra={
                 "request_id": context.request_id,
                 "sub_query_id": sub_query.id,
                 "llm_ms": llm_ms,
                 "prompt_chars": len(formatted_prompt),
                 "schema_context_chars": len(schema_context),
-            },
-        )
-        
-        # 详细记录 LLM 返回的原始计划
-        logger.debug(
-            "LLM response received",
-            extra={
                 "response_keys": list(plan_dict.keys()),
                 "intent": plan_dict.get("intent"),
                 "metrics_count": len(plan_dict.get("metrics", [])),
@@ -1119,10 +1112,12 @@ async def process_subquery(
         logger.debug(json.dumps(plan_display, ensure_ascii=False, indent=2))
         logger.debug("=" * 80)
         
-        # 同时记录到 extra 中（用于日志系统）
+        # 合并为一条简洁的完成日志
         stage2_ms = int((time.perf_counter() - stage2_start) * 1000)
         logger.info(
-            "Stage 2 completed successfully",
+            f"Stage 2 完成 | 计划生成 | Intent: {query_plan.intent.value} | "
+            f"指标: {len(query_plan.metrics)}, 维度: {len(query_plan.dimensions)} | "
+            f"RAG: {rag_ms}ms, LLM: {llm_ms}ms",
             extra={
                 "request_id": context.request_id,
                 "sub_query_id": sub_query.id,
@@ -1132,13 +1127,17 @@ async def process_subquery(
                 "filters_count": len(query_plan.filters),
                 "warnings_count": len(query_plan.warnings),
                 "stage2_ms": stage2_ms,
+                "rag_ms": rag_ms,
+                "llm_ms": llm_ms,
             },
         )
 
-        # DEBUG：保留完整结构化信息（列表/JSON）
+        # DEBUG：保留完整结构化信息
         logger.debug(
-            "Stage 2 completed successfully (details)",
+            "Stage 2 详情",
             extra={
+                "request_id": context.request_id,
+                "sub_query_id": sub_query.id,
                 "intent": query_plan.intent.value,
                 "metrics": plan_display["metrics"],
                 "dimensions": plan_display["dimensions"],
@@ -1147,7 +1146,6 @@ async def process_subquery(
                 "order_by": plan_display["order_by"],
                 "limit": plan_display["limit"],
                 "warnings": plan_display["warnings"],
-                "full_plan_json": json.dumps(plan_display, ensure_ascii=False),
             },
         )
         

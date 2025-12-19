@@ -75,15 +75,6 @@ async def process_request(
     current_date_str = current_date.strftime("%Y-%m-%d")
     
     stage1_start = time.perf_counter()
-    logger.info(
-        "Starting Stage 1: Query Decomposition",
-        extra={
-            "user_id": user_id,
-            "role_id": role_id,
-            "tenant_id": tenant_id,
-            "question_length": len(question)
-        }
-    )
     
     # 创建 RequestContext 对象
     request_context = RequestContext(
@@ -119,18 +110,14 @@ async def process_request(
         )
 
         llm_ms = int((time.perf_counter() - llm_start) * 1000)
-        logger.info(
-            "Stage 1 LLM completed",
+        logger.debug(
+            f"LLM 调用完成 | 耗时: {llm_ms}ms",
             extra={
                 "request_id": request_id,
                 "llm_ms": llm_ms,
                 "prompt_chars": len(formatted_prompt),
-            },
-        )
-        
-        logger.debug(
-            "LLM response received",
-            extra={"response_keys": list(parsed_response.keys())}
+                "response_keys": list(parsed_response.keys())
+            }
         )
     except Exception as e:
         llm_ms = int((time.perf_counter() - llm_start) * 1000)
@@ -194,14 +181,6 @@ async def process_request(
             )
             raise Stage1Error(f"Sub-query item at index {idx} has empty or invalid 'description'")
     
-    logger.info(
-        "Stage 1 parsed sub-queries",
-        extra={
-            "request_id": request_id,
-            "sub_query_count": len(sub_queries_raw),
-        },
-    )
-    
     # Step 4: Normalize Sub-Queries
     # 忽略 LLM 提供的 id，生成新的稳定 id
     normalized_sub_queries: List[SubQueryItem] = []
@@ -229,61 +208,34 @@ async def process_request(
             }
         )
     
-    # INFO：输出拆解结果（用户可见）
-    logger.info(
-        "【Stage 1 拆解结果】共拆解为 {} 个子查询",
-        len(normalized_sub_queries),
-        extra={
-            "request_id": request_id,
-            "sub_query_count": len(normalized_sub_queries),
-        },
-    )
-    # 逐个输出每个子查询的 description
-    for idx, sq in enumerate(normalized_sub_queries, 1):
-        logger.info(
-            "  {}. {}",
-            idx,
-            sq.description,
-            extra={
-                "request_id": request_id,
-                "sub_query_id": sq.id,
-            },
-        )
-    
     # Step 5: Assemble Final Output
     query_request_description = QueryRequestDescription(
         request_context=request_context,
         sub_queries=normalized_sub_queries
     )
     
-    # DEBUG：子查询明细（INFO 禁止长文本/长列表）
-    for idx, sub_query in enumerate(normalized_sub_queries):
-        logger.debug(
-            f"Sub-query {idx + 1}/{len(normalized_sub_queries)}",
-            extra={
-                "sub_query_id": sub_query.id,
-                "description": sub_query.description,
-                "request_id": request_id,
-            },
-        )
-    
+    # 计算耗时并输出汇总日志
     stage1_ms = int((time.perf_counter() - stage1_start) * 1000)
+    
+    # 合并为一条简洁的完成日志
+    sub_query_summaries = [f"{idx}. {sq.description}" for idx, sq in enumerate(normalized_sub_queries, 1)]
     logger.info(
-        "Stage 1 completed successfully",
+        f"Stage 1 完成 | 查询分解 | 子查询数: {len(normalized_sub_queries)} | 耗时: {stage1_ms}ms\n" + 
+        "\n".join(sub_query_summaries),
         extra={
             "sub_query_count": len(normalized_sub_queries),
             "request_id": request_id,
             "stage1_ms": stage1_ms,
         }
     )
-
-    # DEBUG：完整 sub_queries payload
+    
+    # DEBUG：详细信息用于问题排查
     logger.debug(
-        "Stage 1 completed successfully (details)",
+        "Stage 1 详情",
         extra={
             "request_id": request_id,
             "sub_queries": [{"id": sq.id, "description": sq.description} for sq in normalized_sub_queries],
-        },
+        }
     )
     
     return query_request_description

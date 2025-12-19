@@ -225,6 +225,7 @@ class SemanticRegistry:
         
         # 按文件名顺序加载
         yaml_files = sorted(path.glob("*.yaml"))
+        loaded_files = []
         
         for yaml_file in yaml_files:
             try:
@@ -233,10 +234,14 @@ class SemanticRegistry:
                     if data:
                         # 合并数据（后续文件会覆盖前面的同名键）
                         all_data.update(data)
-                        logger.debug(f"Loaded YAML file: {yaml_file.name}")
+                        loaded_files.append(yaml_file.stem)  # 只保存文件名（不含扩展名）
             except Exception as e:
                 logger.error(f"Error loading YAML file {yaml_file}: {e}")
                 raise
+        
+        # 合并打印：一次性显示所有加载的文件
+        if loaded_files:
+            logger.debug(f"已加载语义配置 ({', '.join(loaded_files)})")
 
         # 兼容两种写法，并对浅合并后的结果做一次安全配置归一化：
         # - security: { role_policies: [...] }
@@ -412,12 +417,12 @@ class SemanticRegistry:
         if not self.qdrant_client:
             raise RuntimeError("Qdrant client not initialized")
         
-        logger.info("Starting Qdrant reindexing...")
+        logger.info("开始重建向量索引...")
         
         # 删除现有 collection（如果存在）
         try:
             await self.qdrant_client.delete_collection(QDRANT_COLLECTION_NAME)
-            logger.debug(f"Deleted existing collection: {QDRANT_COLLECTION_NAME}")
+            logger.debug(f"已删除旧集合: {QDRANT_COLLECTION_NAME}")
         except Exception:
             pass  # Collection 可能不存在
         
@@ -430,7 +435,7 @@ class SemanticRegistry:
                 distance=Distance.COSINE
             )
         )
-        logger.info(f"Created collection: {QDRANT_COLLECTION_NAME}")
+        logger.info(f"已创建新集合: {QDRANT_COLLECTION_NAME}")
         
         # 为每个术语生成 Embedding 并存储
         points = []
@@ -469,11 +474,11 @@ class SemanticRegistry:
                         collection_name=QDRANT_COLLECTION_NAME,
                         points=points
                     )
-                    logger.debug(f"Inserted {len(points)} points into Qdrant")
+                    logger.debug(f"已插入 {len(points)} 个向量点")
                     points = []
             
             except Exception as e:
-                logger.warning(f"Error processing term {term_id}: {e}")
+                logger.warning(f"处理术语失败 {term_id}: {e}")
                 continue
         
         # 插入剩余的点
@@ -482,9 +487,9 @@ class SemanticRegistry:
                 collection_name=QDRANT_COLLECTION_NAME,
                 points=points
             )
-            logger.debug(f"Inserted final {len(points)} points into Qdrant")
+            logger.debug(f"已插入最后 {len(points)} 个向量点")
         
-        logger.info(f"Reindexing completed. Total points: {point_id - 1}")
+        logger.info(f"向量索引重建完成 | 总数: {point_id - 1}")
     
     async def load_from_yaml(self, yaml_path: str = "semantics") -> None:
         """
@@ -499,7 +504,7 @@ class SemanticRegistry:
         Args:
             yaml_path: YAML 文件目录路径，默认为 "semantics"
         """
-        logger.info(f"Loading semantic registry from: {yaml_path}")
+        logger.info(f"加载语义注册表 | 路径: {yaml_path}")
         
         # Step 1: 计算指纹
         current_fingerprint = self._calculate_yaml_fingerprint(yaml_path)
@@ -511,12 +516,12 @@ class SemanticRegistry:
         # Step 3: 分支处理
         if stored_fingerprint == current_fingerprint:
             # 快速路径：指纹一致，仅加载 YAML 到内存
-            logger.info("Fast Path: Fingerprint matches, loading YAML only")
+            logger.info("快速加载 | 指纹匹配，跳过向量索引")
             yaml_data = await asyncio.to_thread(self._load_yaml_files, yaml_path)
             self._build_metadata_map(yaml_data)
         else:
             # 重新索引：指纹不一致，需要重建向量索引
-            logger.info("Re-indexing: Fingerprint mismatch, rebuilding vector index")
+            logger.info("重建索引 | 指纹不匹配，重建向量索引")
             
             # 加载 YAML
             yaml_data = await asyncio.to_thread(self._load_yaml_files, yaml_path)
@@ -528,7 +533,7 @@ class SemanticRegistry:
             # 存储新指纹
             await self._store_fingerprint(current_fingerprint)
         
-        logger.info("Semantic registry loaded successfully")
+        logger.info("语义注册表加载完成")
     
     def _init_clients(self) -> None:
         """初始化 Qdrant 客户端
@@ -603,8 +608,7 @@ class SemanticRegistry:
                 fallback_path = (Path(store_path_str) if store_path_str else DEFAULT_STORAGE_PATH) / f"instance_{os.getpid()}"
                 fallback_path.mkdir(parents=True, exist_ok=True)
                 logger.warning(
-                    "Local Qdrant storage path is locked by another process; "
-                    "falling back to per-process storage directory",
+                    "Qdrant 路径被锁定，切换到进程隔离目录",
                     extra={
                         "original_path": str(store_path),
                         "fallback_path": str(fallback_path),
@@ -612,7 +616,7 @@ class SemanticRegistry:
                     },
                 )
                 self.qdrant_client = AsyncQdrantClient(path=str(fallback_path))
-                logger.info(f"Initialized Qdrant client in LOCAL mode (fallback per-process), storage path: {fallback_path}")
+                logger.info(f"Qdrant 初始化 | 本地模式（进程隔离）| {fallback_path}")
     
     async def initialize(self, yaml_path: str = "semantics") -> None:
         """

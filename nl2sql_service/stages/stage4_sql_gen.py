@@ -241,15 +241,6 @@ async def generate_sql(
     Raises:
         Stage4Error: 当 SQL 生成失败时抛出
     """
-    logger.info(
-        "Starting Stage 4: SQL Generation",
-        extra={
-            "intent": plan.intent.value,
-            "db_type": db_type,
-            "request_id": context.request_id
-        }
-    )
-    
     # Step 1: Initialization (FROM Clause)
     # 确定主实体
     primary_entity_id = None
@@ -585,7 +576,7 @@ async def generate_sql(
         sql_string = query.get_sql()
         
         logger.info(
-            "Stage 4 completed successfully",
+            f"Stage 4 完成 | SQL 生成 | SELECT: {len(select_fields)}, WHERE: {len(where_criteria)}, GROUP BY: {len(group_by_fields)} | SQL 长度: {len(sql_string)}",
             extra={
                 "sql_length": len(sql_string),
                 "select_count": len(select_fields),

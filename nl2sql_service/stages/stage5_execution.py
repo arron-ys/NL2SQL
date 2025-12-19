@@ -157,15 +157,6 @@ async def execute_sql(
     # 记录开始时间
     start_time = time.time()
     
-    logger.info(
-        "Starting Stage 5: SQL Execution",
-        extra={
-            "request_id": context.request_id,
-            "db_type": db_type,
-            "sql_length": len(sql)
-        }
-    )
-    
     # Step 1: Resource Acquisition
     try:
         # 获取数据库引擎
@@ -271,8 +262,9 @@ async def execute_sql(
             latency_ms = int((time.time() - start_time) * 1000)
             row_count = len(rows_sanitized)
             
+            truncated_info = " | 已截断" if is_truncated else ""
             logger.info(
-                "Stage 5 completed successfully",
+                f"Stage 5 完成 | SQL 执行 | 行数: {row_count}, 列数: {len(columns)}{truncated_info} | 耗时: {latency_ms}ms",
                 extra={
                     "row_count": row_count,
                     "column_count": len(columns),

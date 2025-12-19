@@ -53,10 +53,20 @@ class AIClient:
         # 初始化所有提供商
         self._init_providers()
         
+        # 记录初始化后的 provider 列表（用于排查初始化问题）
+        instance_id = id(self)
+        pid = os.getpid()
+        providers = list(self._providers.keys())
+        logger.debug(
+            f"AIClient 初始化详情 | PID={pid} | ID={instance_id} | Providers={providers}"
+        )
+        
+        # 合并为一条简洁的日志
+        provider_names = ', '.join(providers) if providers else '无'
         logger.info(
-            "AIClient initialized",
+            f"AI 客户端已初始化 | Providers: {provider_names}",
             extra={
-                "providers": list(self._providers.keys()),
+                "providers": providers,
                 "model_mappings": list(self.config.get("model_mapping", {}).keys())
             }
         )
@@ -404,6 +414,22 @@ class AIClient:
             raise ValueError(f"No provider specified for usage_key: {usage_key}")
         
         if provider_name not in self._providers:
+            # 记录缺失 provider 时的详细信息（用于排查问题）
+            instance_id = id(self)
+            pid = os.getpid()
+            logger.error(
+                f"Missing Provider: '{provider_name}' | "
+                f"Available Providers: {list(self._providers.keys())} | "
+                f"Usage Key: '{usage_key}' | "
+                f"PID={pid} | ID={instance_id}",
+                extra={
+                    "provider_name": provider_name,
+                    "available_providers": list(self._providers.keys()),
+                    "usage_key": usage_key,
+                    "instance_id": instance_id,
+                    "pid": pid
+                }
+            )
             raise ValueError(
                 f"Provider '{provider_name}' not initialized. "
                 f"Available providers: {list(self._providers.keys())}"
@@ -727,10 +753,57 @@ def get_ai_client() -> AIClient:
     """
     获取全局 AI 客户端实例（单例模式）
     
+    增强功能：
+    - 防御性环境变量加载：确保 .env 文件已加载
+    - 全链路日志：记录初始化前后的状态，便于诊断问题
+    
     Returns:
         AIClient: 全局 AI 客户端实例
     """
     global _ai_client
     if _ai_client is None:
+        # 防御性加载：确保环境变量已就绪（无论调用时机如何）
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(override=False)  # 如果已加载则不覆盖，避免破坏已有配置
+        except ImportError:
+            logger.warning("python-dotenv not available, skipping defensive load_dotenv()")
+        except Exception as e:
+            logger.warning(f"Failed to load .env file defensively: {e}")
+        
+        # 记录初始化前的环境变量状态（用于诊断）
+        jina_key = os.getenv("JINA_API_KEY")
+        openai_key = os.getenv("OPENAI_API_KEY")
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+        qwen_key = os.getenv("QWEN_API_KEY")
+        
+        logger.info(
+            "Creating new AIClient instance (defensive initialization)",
+            extra={
+                "jina_key_exists": bool(jina_key),
+                "jina_key_length": len(jina_key) if jina_key else 0,
+                "openai_key_exists": bool(openai_key),
+                "openai_key_length": len(openai_key) if openai_key else 0,
+                "deepseek_key_exists": bool(deepseek_key),
+                "deepseek_key_length": len(deepseek_key) if deepseek_key else 0,
+                "qwen_key_exists": bool(qwen_key),
+                "qwen_key_length": len(qwen_key) if qwen_key else 0,
+            }
+        )
+        
+        # 创建实例
         _ai_client = AIClient()
+        
+        # 如果 jina_key 存在但 jina provider 未初始化，发出警告
+        initialized_providers = list(_ai_client._providers.keys())
+        if jina_key and "jina" not in initialized_providers:
+            logger.error(
+                "JINA_API_KEY 已配置但 Provider 未初始化！请检查初始化逻辑",
+                extra={
+                    "jina_key_exists": True,
+                    "jina_key_length": len(jina_key),
+                    "initialized_providers": initialized_providers,
+                }
+            )
+    
     return _ai_client

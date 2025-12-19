@@ -203,6 +203,7 @@ async def _generate_synthesized_insight(
     # 格式化提示模板
     formatted_prompt = PROMPT_DATA_INSIGHT.format(
         original_question=original_question,
+        context_summary="（当前查询无额外业务上下文）",  # 添加缺失的参数
         query_result_data=query_result_markdown,
         execution_latency_ms=total_latency_ms,
         row_count=total_row_count,

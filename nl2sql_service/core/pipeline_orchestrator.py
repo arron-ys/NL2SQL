@@ -131,14 +131,6 @@ async def _process_single_subquery(
     Returns:
         Union[ExecutionResult, PipelineError]: 执行结果或错误对象
     """
-    logger.info(
-        "Starting sub-query pipeline",
-        extra={
-            "sub_query_id": sub_query.id,
-            "request_id": context.request_id
-        }
-    )
-    
     try:
         # Stage 2: Plan Generation
         try:
@@ -146,10 +138,6 @@ async def _process_single_subquery(
                 sub_query=sub_query,
                 context=context,
                 registry=registry
-            )
-            logger.debug(
-                "Stage 2 completed",
-                extra={"sub_query_id": sub_query.id, "intent": plan.intent.value}
             )
         except Exception as e:
             logger.error(
@@ -168,10 +156,6 @@ async def _process_single_subquery(
                 plan=plan,
                 context=context,
                 registry=registry
-            )
-            logger.debug(
-                "Stage 3 completed",
-                extra={"sub_query_id": sub_query.id}
             )
         except Exception as e:
             logger.error(
@@ -195,13 +179,6 @@ async def _process_single_subquery(
                 registry=registry,
                 db_type=db_type
             )
-            logger.debug(
-                "Stage 4 completed",
-                extra={
-                    "sub_query_id": sub_query.id,
-                    "sql_length": len(sql)
-                }
-            )
         except Exception as e:
             logger.error(
                 "Stage 4 failed",
@@ -220,8 +197,8 @@ async def _process_single_subquery(
                 context=context,
                 db_type=db_type
             )
-            logger.info(
-                "Sub-query pipeline completed successfully",
+            logger.debug(
+                f"子查询完成 | {sub_query.id} | 状态: {result.status.value}",
                 extra={
                     "sub_query_id": sub_query.id,
                     "status": result.status.value,
@@ -331,25 +308,8 @@ async def run_pipeline(
                 error=f"[{payload.stage}] {payload.code}: {payload.message}",
                 latency_ms=0  # PipelineError 没有执行时间信息
             )
-            logger.debug(
-                f"Sub-query {idx + 1}/{len(results)} failed",
-                extra={
-                    "sub_query_id": sub_query.id,
-                    "error_stage": payload.stage,
-                    "error_code": payload.code,
-                    "result_type": "PipelineError (converted to ExecutionResult)"
-                }
-            )
         elif isinstance(payload, ExecutionResult):
             execution_result = payload
-            logger.debug(
-                f"Sub-query {idx + 1}/{len(results)} completed",
-                extra={
-                    "sub_query_id": sub_query.id,
-                    "status": payload.status.value,
-                    "result_type": "ExecutionResult"
-                }
-            )
         else:
             # 未知类型，创建错误结果
             logger.warning(
@@ -380,7 +340,7 @@ async def run_pipeline(
     failed_count = len(results) - success_count
     
     logger.info(
-        "Pipeline orchestration completed",
+        f"流水线编排完成 | 总数: {len(results)} | 成功: {success_count}, 失败: {failed_count}",
         extra={
             "request_id": query_desc.request_context.request_id,
             "total_count": len(results),

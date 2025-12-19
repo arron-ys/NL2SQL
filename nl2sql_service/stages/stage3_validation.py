@@ -351,13 +351,6 @@ async def validate_and_normalize_plan(
         UnsupportedMultiFactError: 当计划包含多个事实表时
     """
     stage3_start = time.perf_counter()
-    logger.info(
-        "Starting Stage 3: Validation and Normalization",
-        extra={
-            "intent": plan.intent.value,
-            "request_id": context.request_id
-        }
-    )
     
     # 创建计划的副本用于修改
     # 注意：Pydantic 模型默认是不可变的，我们需要通过 model_copy 或重新构建
@@ -586,10 +579,10 @@ async def validate_and_normalize_plan(
         validated_plan = QueryPlan(**plan_dict)
         
         stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
-        stage3_seconds = stage3_ms / 1000.0
         logger.info(
-            "Stage 3 completed successfully（Stage3耗时：{}s）",
-            round(stage3_seconds, 1),
+            f"Stage 3 完成 | 计划验证 | Intent: {validated_plan.intent.value} | "
+            f"指标: {len(validated_plan.metrics)}, 维度: {len(validated_plan.dimensions)}, 过滤: {len(validated_plan.filters)} | "
+            f"耗时: {stage3_ms}ms",
             extra={
                 "intent": validated_plan.intent.value,
                 "metrics_count": len(validated_plan.metrics),
