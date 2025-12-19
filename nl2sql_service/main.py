@@ -5,6 +5,7 @@ NL2SQL 服务的 FastAPI 入口点，连接所有组件形成可运行的 Web �
 
 对应详细设计文档 Section 5 的定义。
 """
+import asyncio
 import os
 import sys
 import time
@@ -61,6 +62,68 @@ logger = get_logger(__name__)
 # 全局语义注册表实例
 registry: Optional[SemanticRegistry] = None
 
+# 健康检查后台任务
+healthcheck_task: Optional[asyncio.Task] = None
+
+
+# ============================================================
+# 健康检查后台任务（长期：连接健康检查 + 自愈）
+# ============================================================
+async def healthcheck_loop():
+    """
+    健康检查后台任务
+    
+    每 HEALTH_INTERVAL_SEC（默认 120s）执行一次健康检查：
+    - 对所有 provider 做连通性探测
+    - 若探测失败，provider 会自动 reset_client()
+    - 记录健康状态到日志
+    """
+    from core.ai_client import get_ai_client
+    
+    # 从环境变量读取配置
+    interval_sec = float(os.getenv("HEALTH_INTERVAL_SEC", "120"))
+    
+    logger.info(
+        "Healthcheck loop started",
+        extra={"interval_sec": interval_sec}
+    )
+    
+    try:
+        while True:
+            await asyncio.sleep(interval_sec)
+            
+            try:
+                ai_client = get_ai_client()
+                results = await ai_client.healthcheck_all()
+                
+                # 检查是否有失败的 provider
+                failed_providers = [name for name, ok in results.items() if not ok]
+                
+                if failed_providers:
+                    logger.warning(
+                        "Healthcheck detected unhealthy providers",
+                        extra={
+                            "failed_providers": failed_providers,
+                            "results": results,
+                            "metrics": ai_client.get_metrics(),
+                        }
+                    )
+                else:
+                    logger.debug(
+                        "Healthcheck passed for all providers",
+                        extra={"results": results}
+                    )
+            
+            except Exception as e:
+                logger.error(
+                    "Healthcheck loop error",
+                    extra={"error": str(e)}
+                )
+    
+    except asyncio.CancelledError:
+        logger.info("Healthcheck loop cancelled")
+        raise
+
 
 # ============================================================
 # 生命周期管理
@@ -73,7 +136,7 @@ async def lifespan(app: FastAPI):
     使用 lifespan context manager 替代已废弃的 @app.on_event。
     在 yield 之前执行启动逻辑，在 yield 之后执行关闭逻辑。
     """
-    global registry
+    global registry, healthcheck_task
     
     # ========== 启动逻辑 ==========
     logger.info("Starting NL2SQL Service...")
@@ -102,6 +165,10 @@ async def lifespan(app: FastAPI):
             "Semantic registry initialized successfully",
             extra={"yaml_path": yaml_path}
         )
+        
+        # 启动健康检查后台任务（长期：连接健康检查 + 自愈）
+        healthcheck_task = asyncio.create_task(healthcheck_loop())
+        logger.info("Healthcheck background task started")
 
         # 服务启动完成提示（便于前端/运维快速定位启动状态）
         logger.info("【服务已经完全启动，等待前端发送请求】")
@@ -120,6 +187,24 @@ async def lifespan(app: FastAPI):
         logger.info("Shutting down NL2SQL Service...")
         
         try:
+            # 取消健康检查后台任务
+            if healthcheck_task and not healthcheck_task.done():
+                healthcheck_task.cancel()
+                try:
+                    await healthcheck_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("Healthcheck background task stopped")
+            
+            # 关闭 AI 客户端连接（Option B：资源管理）
+            # ⚠️ 直接导入变量，避免在关闭流程中触发延迟初始化
+            from core.ai_client import _ai_client
+            if _ai_client is not None:
+                await _ai_client.close()
+                logger.info("AI client connections closed")
+            else:
+                logger.debug("AI client not initialized, skip close")
+            
             # 关闭数据库连接池
             await close_all()
             logger.info("Database connections closed")
@@ -139,6 +224,70 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+
+# ============================================================
+# 健康检查和监控端点（中期：监控&告警）
+# ============================================================
+@app.get("/health", tags=["Health"])
+async def health_check():
+    """
+    健康检查端点
+    
+    返回服务健康状态和 provider 连通性。
+    """
+    from core.ai_client import get_ai_client
+    
+    try:
+        ai_client = get_ai_client()
+        provider_health = await ai_client.healthcheck_all()
+        
+        # 判断整体健康状态
+        all_healthy = all(provider_health.values())
+        
+        return {
+            "status": "healthy" if all_healthy else "degraded",
+            "providers": provider_health,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
+
+
+@app.get("/metrics", tags=["Health"])
+async def get_metrics():
+    """
+    获取 provider 统计指标
+    
+    返回所有 provider 的请求统计、错误率、健康检查状态等。
+    """
+    from core.ai_client import get_ai_client
+    
+    try:
+        ai_client = get_ai_client()
+        metrics = ai_client.get_metrics()
+        
+        return {
+            "metrics": metrics,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Metrics retrieval error: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
 
 
 # ============================================================

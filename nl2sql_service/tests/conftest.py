@@ -437,15 +437,18 @@ def client():
         yield c
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 async def async_client():
     """
-    异步 AsyncClient fixture
+    异步 AsyncClient fixture（会话级别）
     
     使用 ASGITransport 和 AsyncClient 确保 FastAPI lifespan 事件正确触发。
     适用于异步测试（@pytest.mark.asyncio）。
     
-    注意：需要显式处理 lifespan 事件，确保 startup 和 shutdown 被调用。
+    注意：
+    - scope="session" 确保所有测试共享同一个 app 实例和 Qdrant 客户端，
+      避免重复初始化导致的文件锁冲突（Qdrant 本地存储不支持多实例并发访问）。
+    - 只在第一个测试时初始化 lifespan，在所有测试结束后才关闭。
     """
     from main import app
     from contextlib import asynccontextmanager

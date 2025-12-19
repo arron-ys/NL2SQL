@@ -224,8 +224,13 @@ def _inject_time_window_if_needed(plan: QueryPlan, plan_dict: Dict[str, Any], re
     """
     步骤四 子步骤1：时间窗口补全 Time Window Injection（严格按最终设计 0~4）。
     """
-    # 0) 用户显式指定 time_range -> 跳过
-    if plan_dict.get("time_range") is not None:
+    # 0) 检查 time_range 字段是否存在于 Plan 中
+    # 关键修复：区分"字段存在且值为 None"（明确不要时间过滤）和"字段不存在"（需要补全）
+    if "time_range" in plan_dict:
+        # 字段存在，无论值是 None 还是具体的时间范围，都表示 Stage 2 已做出明确决策
+        # - 值为 None：用户明确不需要时间过滤（如"总体销售额"）
+        # - 值为非 None：用户已指定具体时间范围
+        # 两种情况都应跳过自动补全逻辑
         return
     if not plan.metrics:
         return

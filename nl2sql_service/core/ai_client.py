@@ -61,6 +61,52 @@ class AIClient:
             }
         )
     
+    async def close(self):
+        """
+        关闭所有 provider 的连接（Option B：资源管理）
+        
+        在应用关闭时调用，确保所有连接正确清理。
+        """
+        for provider_name, provider in self._providers.items():
+            try:
+                if hasattr(provider, 'close'):
+                    await provider.close()
+                    logger.debug(f"Closed provider: {provider_name}")
+            except Exception as e:
+                logger.error(f"Error closing provider {provider_name}: {e}")
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        获取所有 provider 的统计指标（中期：监控&告警）
+        
+        Returns:
+            Dict[str, Any]: 所有 provider 的指标快照
+        """
+        metrics = {}
+        for provider_name, provider in self._providers.items():
+            if hasattr(provider, 'metrics'):
+                metrics[provider_name] = provider.metrics.to_dict()
+        return metrics
+    
+    async def healthcheck_all(self) -> Dict[str, bool]:
+        """
+        对所有 provider 执行健康检查（长期：连接健康检查 + 自愈）
+        
+        Returns:
+            Dict[str, bool]: provider_name -> 健康状态
+        """
+        results = {}
+        for provider_name, provider in self._providers.items():
+            if hasattr(provider, 'healthcheck'):
+                try:
+                    results[provider_name] = await provider.healthcheck()
+                except Exception as e:
+                    logger.error(f"Healthcheck failed for {provider_name}: {e}")
+                    results[provider_name] = False
+            else:
+                results[provider_name] = True  # 没有 healthcheck 方法则认为健康
+        return results
+    
     def _default_config(self) -> Dict[str, Any]:
         """生成默认配置（从环境变量读取）"""
         # 读取 API keys

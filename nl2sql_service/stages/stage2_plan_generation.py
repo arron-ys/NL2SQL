@@ -763,6 +763,9 @@ async def process_subquery(
         model_info = model_name if model_name else "unknown"
     except Exception:
         model_info = "unknown"
+    
+    # 显示即将发送给 LLM 的子查询
+    logger.debug(f"【子查询输入】{sub_query.description}")
     logger.debug(f"【已将提示词发送给 LLM（模型：{model_info}）】Prompt如下：\n{formatted_prompt}")
     # INFO 心跳：等待 LLM 返回期间每 5 秒提示一次（便于判断是否卡死）
     hb_stop = asyncio.Event()
