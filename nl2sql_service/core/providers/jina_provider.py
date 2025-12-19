@@ -230,7 +230,7 @@ class JinaProvider(BaseAIProvider):
         if self._proxy_source == "explicit" and self._proxy_url:
             if not _is_proxy_reachable(self._proxy_url):
                 self._proxy_disabled_reason = "unreachable"
-                logger.warning(
+                logger.debug(
                     "Jina proxy is configured but unreachable",
                     extra={
                         "provider": "jina",
@@ -252,7 +252,7 @@ class JinaProvider(BaseAIProvider):
                 self._proxy_source = "none"
                 self._trust_env = False
                 self._proxy_downgraded = True
-                logger.warning(
+                logger.debug(
                     "Jina proxy unreachable; downgraded to direct connection with trust_env=False",
                     extra={"provider": "jina"},
                 )
@@ -286,11 +286,20 @@ class JinaProvider(BaseAIProvider):
         self._client = httpx.AsyncClient(**client_kwargs)
         self._client_lock = asyncio.Lock()  # 用于保护 reset_client()
         
-        logger.info(
+        logger.debug(
             "JinaProvider initialized",
             extra={
                 "base_url": self.base_url,
                 "timeout": self.timeout,
+                "retries": 2,
+                "keepalive_expiry": 5.0,
+            }
+        )
+        
+        # 代理详细信息记录到 DEBUG 级别
+        logger.debug(
+            "JinaProvider proxy configuration",
+            extra={
                 "proxy_mode": self._proxy_mode,
                 "proxy_strict": self._proxy_strict,
                 "trust_env": self._trust_env,
@@ -298,8 +307,6 @@ class JinaProvider(BaseAIProvider):
                 "proxy_url": self._proxy_url,
                 "proxy_downgraded": self._proxy_downgraded,
                 "proxy_disabled_reason": self._proxy_disabled_reason,
-                "retries": 2,
-                "keepalive_expiry": 5.0,
             }
         )
     
@@ -652,7 +659,7 @@ class JinaProvider(BaseAIProvider):
             error_msg = str(e)
             self.metrics.record_healthcheck(success=False)
             
-            logger.warning(
+            logger.debug(
                 f"Jina healthcheck failed (connection error), will reset client",
                 extra={
                     "error": error_msg,
@@ -671,7 +678,7 @@ class JinaProvider(BaseAIProvider):
             error_msg = str(e)
             self.metrics.record_healthcheck(success=False)
             
-            logger.warning(
+            logger.debug(
                 f"Jina healthcheck failed (unexpected error)",
                 extra={
                     "error": error_msg,

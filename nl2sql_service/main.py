@@ -59,7 +59,7 @@ from core.ai_client import AIProviderInitError
 
 logger = get_logger(__name__)
 
-# 全局语义注册表实例
+# 全局 SemanticRegistry 实例
 registry: Optional[SemanticRegistry] = None
 
 # 健康检查后台任务
@@ -83,7 +83,7 @@ async def healthcheck_loop():
     # 从环境变量读取配置
     interval_sec = float(os.getenv("HEALTH_INTERVAL_SEC", "120"))
     
-    logger.info(
+    logger.debug(
         "Healthcheck loop started",
         extra={"interval_sec": interval_sec}
     )
@@ -100,7 +100,7 @@ async def healthcheck_loop():
                 failed_providers = [name for name, ok in results.items() if not ok]
                 
                 if failed_providers:
-                    logger.warning(
+                    logger.debug(
                         "Healthcheck detected unhealthy providers",
                         extra={
                             "failed_providers": failed_providers,
@@ -121,7 +121,7 @@ async def healthcheck_loop():
                 )
     
     except asyncio.CancelledError:
-        logger.info("Healthcheck loop cancelled")
+        logger.debug("Healthcheck loop cancelled")
         raise
 
 
@@ -150,7 +150,7 @@ async def lifespan(app: FastAPI):
         from core.ai_client import get_ai_client
         ai_client = get_ai_client()
         
-        # 获取语义注册表单例
+        # 获取 SemanticRegistry 单例
         registry = await SemanticRegistry.get_instance()
         
         # 获取 YAML 文件路径（从环境变量或使用默认值）
@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI):
         logger.info("✓ NL2SQL 服务已启动，等待请求")
     except Exception as e:
         logger.error(
-            "Failed to initialize semantic registry",
+            "SemanticRegistry 初始化失败",
             extra={"error": str(e)}
         )
         raise
@@ -186,7 +186,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         # ========== 关闭逻辑 ==========
-        logger.info("Shutting down NL2SQL Service...")
+        logger.info("NL2SQL 服务关闭中...")
         
         try:
             # 取消健康检查后台任务
@@ -196,23 +196,20 @@ async def lifespan(app: FastAPI):
                     await healthcheck_task
                 except asyncio.CancelledError:
                     pass
-                logger.info("Healthcheck background task stopped")
             
             # 关闭 AI 客户端连接（Option B：资源管理）
             # ⚠️ 直接导入变量，避免在关闭流程中触发延迟初始化
             from core.ai_client import _ai_client
             if _ai_client is not None:
                 await _ai_client.close()
-                logger.info("AI client connections closed")
-            else:
-                logger.debug("AI client not initialized, skip close")
             
             # 关闭数据库连接池
             await close_all()
-            logger.info("Database connections closed")
+            
+            logger.info("✓ NL2SQL 服务已关闭")
         except Exception as e:
             logger.error(
-                "Error during shutdown",
+                "服务关闭出错",
                 extra={"error": str(e)}
             )
 
@@ -744,8 +741,6 @@ async def execute_nl2sql(
         HTTPException: 当处理失败时抛出
     """
 
-    print("🔥 I AM HERE! I RECEIVED THE REQUEST! 🔥")  # 用 print，别用 logger，防止 logger 配置问题
-
     logger.info(
         "Received NL2SQL request",
         extra={
@@ -1142,7 +1137,7 @@ async def _execute_with_debug(
     
     Args:
         query_desc: 查询请求描述
-        registry: 语义注册表实例
+        registry: SemanticRegistry 实例
         original_question: 原始问题
     
     Returns:

@@ -340,7 +340,7 @@ async def validate_and_normalize_plan(
     Args:
         plan: 原始查询计划
         context: 请求上下文
-        registry: 语义注册表实例
+        registry: SemanticRegistry 实例
     
     Returns:
         QueryPlan: 验证和规范化后的查询计划

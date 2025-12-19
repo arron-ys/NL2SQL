@@ -103,7 +103,7 @@ def _format_schema_context(terms: List[str], registry: SemanticRegistry) -> str:
     
     Args:
         terms: 术语 ID 列表
-        registry: 语义注册表实例
+        registry: SemanticRegistry 实例
     
     Returns:
         str: 格式化后的上下文字符串
@@ -270,7 +270,7 @@ def _perform_anti_hallucination_check(
     
     Args:
         plan_dict: 计划字典
-        registry: 语义注册表实例
+        registry: SemanticRegistry 实例
     
     Returns:
         Tuple[Dict[str, Any], List[str]]: (清理后的计划字典, 警告列表)
@@ -407,7 +407,7 @@ async def process_subquery(
     Args:
         sub_query: 子查询项
         context: 请求上下文
-        registry: 语义注册表实例
+        registry: SemanticRegistry 实例
     
     Returns:
         QueryPlan: 查询计划对象

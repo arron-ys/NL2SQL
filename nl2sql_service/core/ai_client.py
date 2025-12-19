@@ -111,7 +111,7 @@ class AIClient:
                 try:
                     results[provider_name] = await provider.healthcheck()
                 except Exception as e:
-                    logger.error(f"Healthcheck failed for {provider_name}: {e}")
+                    logger.debug(f"Healthcheck failed for {provider_name}: {e}")
                     results[provider_name] = False
             else:
                 results[provider_name] = True  # 没有 healthcheck 方法则认为健康
@@ -354,7 +354,7 @@ class AIClient:
                     init_kwargs["provider_name"] = provider_name
                     # timeout 参数会在 OpenAIProvider.__init__ 中从环境变量读取，不需要在这里传递
                 
-                logger.info(
+                logger.debug(
                     f"Initializing provider '{provider_name}' with type '{provider_type}'",
                     extra={
                         "has_api_key": bool(api_key),
@@ -365,7 +365,7 @@ class AIClient:
                 )
                 
                 self._providers[provider_name] = provider_class(**init_kwargs)
-                logger.info(
+                logger.debug(
                     f"Successfully initialized provider '{provider_name}' with type '{provider_type}'",
                     extra={"base_url": provider_config.get("base_url") or "default"}
                 )
@@ -804,6 +804,6 @@ def get_ai_client() -> AIClient:
                     "jina_key_length": len(jina_key),
                     "initialized_providers": initialized_providers,
                 }
-            )
+        )
     
     return _ai_client

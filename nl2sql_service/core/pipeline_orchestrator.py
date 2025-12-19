@@ -126,7 +126,7 @@ async def _process_single_subquery(
     Args:
         sub_query: 子查询项
         context: 请求上下文
-        registry: 语义注册表实例
+        registry: SemanticRegistry 实例
     
     Returns:
         Union[ExecutionResult, PipelineError]: 执行结果或错误对象
@@ -245,7 +245,7 @@ async def run_pipeline(
     
     Args:
         query_desc: 查询请求描述，包含请求上下文和子查询列表
-        registry: 语义注册表实例
+        registry: SemanticRegistry 实例
     
     Returns:
         List[Dict[str, Any]]: 批量结果列表，每个元素包含：

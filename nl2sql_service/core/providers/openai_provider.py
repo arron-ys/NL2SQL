@@ -216,7 +216,7 @@ class OpenAIProvider(BaseAIProvider):
         # 处理策略：探测不可达则自动禁用代理（fail-open），避免服务直接不可用
         if self._proxy_source == "explicit" and self._proxy_url:
             if not _is_proxy_reachable(self._proxy_url):
-                logger.warning(
+                logger.debug(
                     "Proxy is configured but unreachable",
                     extra={
                         "provider": self.provider_name,
@@ -238,7 +238,7 @@ class OpenAIProvider(BaseAIProvider):
                 self._proxy_source = "none"
                 self._trust_env = False
                 self._proxy_downgraded = True
-                logger.warning(
+                logger.debug(
                     "Proxy unreachable; downgraded to direct connection with trust_env=False",
                     extra={"provider": self.provider_name},
                 )
@@ -275,7 +275,7 @@ class OpenAIProvider(BaseAIProvider):
         # 配置代理
         if self._proxy_source == "explicit" and self._proxy_url:
             http_client_kwargs["proxy"] = self._proxy_url
-            logger.info(
+            logger.debug(
                 "Using explicit proxy for provider",
                 extra={
                     "provider": self.provider_name,
@@ -285,7 +285,7 @@ class OpenAIProvider(BaseAIProvider):
                 },
             )
         else:
-            logger.info(
+            logger.debug(
                 "No explicit proxy for provider",
                 extra={
                     "provider": self.provider_name,
@@ -318,12 +318,22 @@ class OpenAIProvider(BaseAIProvider):
         
         self.client = AsyncOpenAI(**client_kwargs)
         
-        logger.info(
+        logger.debug(
             "OpenAIProvider initialized",
             extra={
                 "provider": self.provider_name,
                 "base_url": self.base_url or "default",
                 "timeout": timeout,
+                "retries": 2,
+                "keepalive_expiry": 5.0,
+            }
+        )
+        
+        # 代理详细信息记录到 DEBUG 级别
+        logger.debug(
+            "OpenAIProvider proxy configuration",
+            extra={
+                "provider": self.provider_name,
                 "proxy_mode": self._proxy_mode,
                 "proxy_strict": self._proxy_strict,
                 "trust_env": self._trust_env,
@@ -331,8 +341,6 @@ class OpenAIProvider(BaseAIProvider):
                 "proxy_url": self._proxy_url,
                 "proxy_downgraded": self._proxy_downgraded,
                 "proxy_disabled_reason": self._proxy_disabled_reason,
-                "retries": 2,
-                "keepalive_expiry": 5.0,
             }
         )
     
@@ -382,7 +390,7 @@ class OpenAIProvider(BaseAIProvider):
             error_msg = str(e)
             self.metrics.record_healthcheck(success=False)
             
-            logger.warning(
+            logger.debug(
                 f"{self.provider_name} healthcheck failed",
                 extra={
                     "error": error_msg,

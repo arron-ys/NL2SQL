@@ -235,7 +235,7 @@ def configure_logger():
         )
     
     # 打印配置信息（此时 request_id 应为默认值 "system"）
-    logger.info("Logger configured: level={}", log_level)
+    logger.info("当前日志级别={}", log_level)
     
     # 标记当前进程已配置
     _CONFIGURED_PID = current_pid

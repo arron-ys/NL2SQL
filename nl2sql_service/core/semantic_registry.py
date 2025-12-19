@@ -65,7 +65,7 @@ class SemanticConfigurationError(Exception):
 
 class SemanticRegistry:
     """
-    语义注册表（单例）
+    SemanticRegistry（单例）
     
     核心职责：
     1. 加载 YAML 配置到内存（metadata_map, keyword_index）
@@ -78,7 +78,7 @@ class SemanticRegistry:
     _lock = asyncio.Lock()
     
     def __init__(self):
-        """初始化语义注册表（私有构造函数，通过 get_instance 获取实例）"""
+        """初始化 SemanticRegistry（私有构造函数，通过 get_instance 获取实例）"""
         # 内存存储
         self.metadata_map: Dict[str, Any] = {}  # ID -> 定义对象
         self.keyword_index: Dict[str, List[str]] = {}  # Name/Alias -> [ID, ...]
@@ -241,7 +241,7 @@ class SemanticRegistry:
         
         # 合并打印：一次性显示所有加载的文件
         if loaded_files:
-            logger.debug(f"已加载语义配置 ({', '.join(loaded_files)})")
+            logger.debug(f"已加载 YAML 配置 ({', '.join(loaded_files)})")
 
         # 兼容两种写法，并对浅合并后的结果做一次安全配置归一化：
         # - security: { role_policies: [...] }
@@ -504,7 +504,7 @@ class SemanticRegistry:
         Args:
             yaml_path: YAML 文件目录路径，默认为 "semantics"
         """
-        logger.info(f"加载语义注册表 | 路径: {yaml_path}")
+        logger.info(f"加载 SemanticRegistry | 路径: {yaml_path}")
         
         # Step 1: 计算指纹
         current_fingerprint = self._calculate_yaml_fingerprint(yaml_path)
@@ -533,7 +533,7 @@ class SemanticRegistry:
             # 存储新指纹
             await self._store_fingerprint(current_fingerprint)
         
-        logger.info("语义注册表加载完成")
+        logger.info("SemanticRegistry 加载完成")
     
     def _init_clients(self) -> None:
         """初始化 Qdrant 客户端
@@ -620,7 +620,7 @@ class SemanticRegistry:
     
     async def initialize(self, yaml_path: str = "semantics") -> None:
         """
-        初始化语义注册表（完整流程）
+        初始化 SemanticRegistry（完整流程）
         
         Args:
             yaml_path: YAML 文件目录路径
@@ -1234,10 +1234,10 @@ _semantic_registry: Optional[SemanticRegistry] = None
 
 async def get_semantic_registry() -> SemanticRegistry:
     """
-    获取语义注册表单例实例
+    获取 SemanticRegistry 单例实例
     
     Returns:
-        SemanticRegistry: 语义注册表实例
+        SemanticRegistry: SemanticRegistry 实例
     """
     return await SemanticRegistry.get_instance()
 

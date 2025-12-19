@@ -228,7 +228,7 @@ async def process_request(
             "stage1_ms": stage1_ms,
         }
     )
-    
+
     # DEBUG：详细信息用于问题排查
     logger.debug(
         "Stage 1 详情",

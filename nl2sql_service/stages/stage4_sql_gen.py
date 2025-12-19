@@ -232,7 +232,7 @@ async def generate_sql(
     Args:
         plan: 验证后的查询计划
         context: 请求上下文
-        registry: 语义注册表实例
+        registry: SemanticRegistry 实例
         db_type: 数据库类型（"mysql" 或 "postgresql"）
     
     Returns:
