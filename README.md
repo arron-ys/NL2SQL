@@ -92,3 +92,70 @@ flowchart TD
     C --. retrieve/context .--> S
     D --. validate .--> S
     E --. compile/enforce .--> S
+
+
+
+
+## 关键亮点（Key Features）
+
+- **“意图-编译”分离**：LLM 只产出 **PLAN Skeleton**，后端用规则与语义层做**确定性编译** → 可控、可测、可回归。
+- **强契约 PLAN**：全链路围绕统一数据结构流转 → 调试与阶段定位天然清晰（错在拆解 / Plan / 校验 / SQL / 执行 / 解释，一眼就能断层）。
+- **语义层治理（YAML SSoT）**：指标 / 维度 / 枚举 / 默认时间 / 强制过滤统一落在配置 → 业务变更只改配置，不改代码。
+- **默认值与兜底策略**：如指标自带 `default_time`（字段 + 时间窗口 + fallback），Plan 不完整也能自动补齐到“可执行形态”。
+- **企业级权限模型**：角色 → 范围 → RLS 片段的显式配置与强制注入 → 越权不可生成、越权不可执行。
+- **MVP 能力边界明确（可运营）**：明确列出 V1 不支持项（跨事实表、嵌套查询、自定义时间偏移等），并要求代码**熔断报错** → 避免“看似支持、实际乱跑”。
+
+---
+
+## 语义层长什么样（真实配置片段）
+
+### Metric（指标）
+
+- `METRIC_GMV`：`SUM(line_gmv)`，默认时间窗口近 30 天，默认过滤 `LF_REVENUE_VALID_ORDER`
+- `METRIC_AOV`：比率指标（`METRIC_GMV / METRIC_ORDER_CNT`），支持 `safe_division`
+
+示例（片段示意）：
+
+```yaml
+metrics:
+  - metric_id: METRIC_GMV
+    expr: "SUM(line_gmv)"
+    default_time:
+      time_field_id: TF_ORDER_DATE
+      window: TW_LAST_30_DAYS
+      fallback: TW_THIS_YEAR
+    default_filters:
+      - LF_REVENUE_VALID_ORDER
+
+  - metric_id: METRIC_AOV
+    expr: "safe_division(${METRIC_GMV}, ${METRIC_ORDER_CNT})"
+```
+
+
+## Entity（实体）与 Semantic View（语义视图）
+
+- `ENT_SALES_ORDER_ITEM` → `semantic_view: v_sales_order_item`
+- `ENT_EMPLOYEE` → `semantic_view: v_employee_profile`
+
+> **MVP 阶段的关键设计**：SQL `FROM` 只指向语义视图（宽表），不动态推导复杂 `JOIN`，把复杂性固定在数据建模层（更稳、更可控）。
+
+---
+
+## 产品级的“可解释性”（不是瞎跑）
+
+这个项目最像“工程系统”的地方：它天然支持把每一步都讲清楚——
+
+- **Plan 是可读的**：你能看到模型到底选了什么指标、什么维度、什么过滤、什么时间范围。
+- **校验是可解释的**：ID 是否存在、是否允许维度、枚举值是否落在集合内、是否触发不支持特性熔断。
+- **SQL 是可审计的**：RLS 注入了什么、默认过滤加了什么、时间窗口落成了什么日期范围。
+
+---
+
+## 接口形态（服务端对外）
+
+作为后端服务，它可以提供：
+
+- `POST /nl2sql/plan`：只产出 PLAN（用于 Debug / 可视化 / 回归）
+- `POST /nl2sql/sql`：产出 SQL（用于审计）
+- `POST /nl2sql/execute`：执行并返回结构化结果 + Answer（端到端）
+
