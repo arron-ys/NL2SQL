@@ -87,7 +87,6 @@ async def db_engine():
 
 
 @pytest.mark.asyncio
-@pytest.mark.integration
 @pytest.mark.live
 @pytest.mark.skipif(
     _should_skip_db_tests(),
@@ -140,7 +139,6 @@ async def test_database_connection(db_engine: AsyncEngine):
 
 
 @pytest.mark.asyncio
-@pytest.mark.integration
 @pytest.mark.live
 @pytest.mark.skipif(
     _should_skip_db_tests(),
@@ -190,7 +188,6 @@ async def test_database_connection_with_get_db_session(db_engine: AsyncEngine):
 
 
 @pytest.mark.asyncio
-@pytest.mark.integration
 @pytest.mark.live
 @pytest.mark.skipif(
     _should_skip_db_tests(),

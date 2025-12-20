@@ -55,6 +55,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from freezegun import freeze_time
 
 from main import app
 from schemas.plan import DimensionItem, MetricItem, PlanIntent, QueryPlan
@@ -66,40 +67,7 @@ from stages.stage3_validation import MissingMetricError, PermissionDeniedError
 # ============================================================
 # Test Fixtures
 # ============================================================
-
-
-@pytest.fixture
-def client():
-    """创建 TestClient 实例"""
-    return TestClient(app)
-
-
-@pytest.fixture
-def mock_registry():
-    """创建模拟的 SemanticRegistry"""
-    registry = MagicMock()
-    registry.get_allowed_ids.return_value = {
-        "METRIC_GMV",
-        "METRIC_REVENUE",
-        "DIM_REGION",
-        "DIM_DEPARTMENT",
-    }
-    registry.get_metric_def.return_value = {
-        "id": "METRIC_GMV",
-        "entity_id": "ENTITY_ORDER",
-        "default_filters": [],
-        "default_time": None,
-    }
-    registry.get_dimension_def.return_value = {
-        "id": "DIM_REGION",
-        "entity_id": "ENTITY_ORDER",
-    }
-    registry.check_compatibility.return_value = True
-    registry.global_config = {
-        "global_settings": {},
-        "time_windows": [],
-    }
-    return registry
+# 注意：client 和 mock_registry fixture 已统一到 conftest.py，这里不再重复定义
 
 
 @pytest.fixture
@@ -132,6 +100,7 @@ class TestPlanAPISuccess:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
+    @freeze_time("2024-01-15")
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
     @patch("main.stage3_validation.validate_and_normalize_plan")
@@ -207,6 +176,7 @@ class TestPlanAPISuccess:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
+    @freeze_time("2024-01-15")
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
     @patch("main.stage3_validation.validate_and_normalize_plan")
@@ -279,6 +249,7 @@ class TestPlanAPISuccess:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
+    @freeze_time("2024-01-15")
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
     @patch("main.stage3_validation.validate_and_normalize_plan")
@@ -651,6 +622,7 @@ class TestErrorContract:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
+    @freeze_time("2024-01-15")
     @patch("main.stage1_decomposition.process_request")
     async def test_error_contract_400_status(
         self, mock_decomposition, client, mock_registry
@@ -700,6 +672,7 @@ class TestErrorContract:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
+    @freeze_time("2024-01-15")
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
     async def test_error_contract_500_status_stage2_error(
@@ -767,6 +740,7 @@ class TestErrorContract:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
+    @freeze_time("2024-01-15")
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
     @patch("main.stage3_validation.validate_and_normalize_plan")
@@ -836,6 +810,7 @@ class TestErrorContract:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
+    @freeze_time("2024-01-15")
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
     @patch("main.stage3_validation.validate_and_normalize_plan")
@@ -959,6 +934,7 @@ class TestPlanResponseContract:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
+    @freeze_time("2024-01-15")
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
     @patch("main.stage3_validation.validate_and_normalize_plan")
@@ -1038,6 +1014,7 @@ class TestPlanResponseContract:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
+    @freeze_time("2024-01-15")
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
     @patch("main.stage3_validation.validate_and_normalize_plan")

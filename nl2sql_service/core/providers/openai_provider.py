@@ -19,9 +19,52 @@ from openai import AsyncOpenAI, APIConnectionError
 from openai.types.chat import ChatCompletionMessageParam
 
 from utils.log_manager import get_logger
+from core.errors import ProviderConnectionError, ProviderRateLimitError
 from .base import BaseAIProvider
 
 logger = get_logger(__name__)
+
+
+def _map_openai_exception(e: Exception, provider_name: str) -> Exception:
+    """
+    将 OpenAI SDK 异常映射为稳定的内部异常
+    
+    避免因 SDK 版本变化导致测试脆弱。
+    """
+    # 尝试导入 OpenAI SDK 异常类型
+    try:
+        from openai import APIConnectionError, RateLimitError
+        
+        if isinstance(e, APIConnectionError):
+            return ProviderConnectionError(
+                message=str(e) or "Provider connection failed",
+                provider=provider_name,
+                original_error=e
+            )
+        elif isinstance(e, RateLimitError):
+            return ProviderRateLimitError(
+                message=str(e) or "Provider rate limit exceeded",
+                provider=provider_name,
+                original_error=e
+            )
+    except ImportError:
+        # 如果无法导入 OpenAI SDK 异常类型，使用类型名称匹配
+        error_type_name = type(e).__name__
+        if "Connection" in error_type_name or "APIConnection" in error_type_name:
+            return ProviderConnectionError(
+                message=str(e) or "Provider connection failed",
+                provider=provider_name,
+                original_error=e
+            )
+        elif "RateLimit" in error_type_name or "Rate" in error_type_name:
+            return ProviderRateLimitError(
+                message=str(e) or "Provider rate limit exceeded",
+                provider=provider_name,
+                original_error=e
+            )
+    
+    # 其他异常直接返回（不映射）
+    return e
 
 
 # ============================================================
@@ -409,6 +452,14 @@ class OpenAIProvider(BaseAIProvider):
         **kwargs: Any
     ) -> str:
         """执行聊天补全（返回文本）"""
+        # 检测 NO_NETWORK 环境变量（用于非 live 测试）
+        no_network = os.getenv("NO_NETWORK", "").lower() in ("1", "true", "yes")
+        if no_network:
+            raise RuntimeError(
+                f"Network call detected in offline test mode (NO_NETWORK=1). "
+                f"Provider: {self.provider_name}, Method: chat, Model: {model}. "
+                f"Please mock the provider method before calling."
+            )
         try:
             # 转换消息格式
             chat_messages: List[ChatCompletionMessageParam] = [
@@ -455,7 +506,9 @@ class OpenAIProvider(BaseAIProvider):
                     "model": model
                 }
             )
-            raise
+            # 映射 OpenAI SDK 异常为稳定的内部异常
+            mapped_exception = _map_openai_exception(e, self.provider_name)
+            raise mapped_exception from e
     
     async def chat_json(
         self,
@@ -466,6 +519,14 @@ class OpenAIProvider(BaseAIProvider):
         **kwargs: Any
     ) -> Dict[str, Any]:
         """执行聊天补全（返回 JSON 对象）带统计"""
+        # 检测 NO_NETWORK 环境变量（用于非 live 测试）
+        no_network = os.getenv("NO_NETWORK", "").lower() in ("1", "true", "yes")
+        if no_network:
+            raise RuntimeError(
+                f"Network call detected in offline test mode (NO_NETWORK=1). "
+                f"Provider: {self.provider_name}, Method: chat_json, Model: {model}. "
+                f"Please mock the provider method before calling."
+            )
         start_time = time.time()
         self.metrics.record_request_start()
         
@@ -506,6 +567,7 @@ class OpenAIProvider(BaseAIProvider):
                     "Failed to parse OpenAI response as JSON",
                     extra={"error": str(e), "response_preview": content[:200]}
                 )
+                # JSON 解析错误不映射，直接抛出 ValueError（用于 fallback）
                 raise ValueError(f"Failed to parse response as JSON: {str(e)}") from e
             
             # 成功：记录统计
@@ -591,8 +653,11 @@ class OpenAIProvider(BaseAIProvider):
                 exc_info=True
             )
             
+            # 映射 OpenAI SDK 异常为稳定的内部异常
+            mapped_exception = _map_openai_exception(e, self.provider_name)
+            
             # 对于连接错误，提供诊断建议
-            if error_type == "APIConnectionError":
+            if error_type == "APIConnectionError" or isinstance(mapped_exception, ProviderConnectionError):
                 logger.error(
                     "Connection error detected. Possible causes:",
                     extra={
@@ -623,7 +688,8 @@ class OpenAIProvider(BaseAIProvider):
                     extra={"metrics_snapshot": self.metrics.to_dict()}
                 )
             
-            raise
+            # 映射并抛出异常
+            raise mapped_exception from e
     
     async def embed(
         self,
@@ -632,6 +698,14 @@ class OpenAIProvider(BaseAIProvider):
         **kwargs: Any
     ) -> List[List[float]]:
         """生成文本嵌入向量"""
+        # 检测 NO_NETWORK 环境变量（用于非 live 测试）
+        no_network = os.getenv("NO_NETWORK", "").lower() in ("1", "true", "yes")
+        if no_network:
+            raise RuntimeError(
+                f"Network call detected in offline test mode (NO_NETWORK=1). "
+                f"Provider: {self.provider_name}, Method: embed, Model: {model}. "
+                f"Please mock the provider method before calling."
+            )
         try:
             # 调用嵌入 API
             response = await self.client.embeddings.create(
@@ -662,7 +736,9 @@ class OpenAIProvider(BaseAIProvider):
                     "model": model
                 }
             )
-            raise
+            # 映射 OpenAI SDK 异常为稳定的内部异常
+            mapped_exception = _map_openai_exception(e, self.provider_name)
+            raise mapped_exception from e
     
     async def stream_chat(
         self,

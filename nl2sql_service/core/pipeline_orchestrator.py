@@ -155,7 +155,8 @@ async def _process_single_subquery(
             validated_plan = await stage3_validation.validate_and_normalize_plan(
                 plan=plan,
                 context=context,
-                registry=registry
+                registry=registry,
+                sub_query_id=sub_query.id
             )
         except Exception as e:
             logger.error(
@@ -173,11 +174,12 @@ async def _process_single_subquery(
             config = get_pipeline_config()
             db_type = config.db_type.value
             
-            sql = await stage4_sql_gen.generate_sql(
+            sql, diag_ctx = await stage4_sql_gen.generate_sql(
                 plan=validated_plan,
                 context=context,
                 registry=registry,
-                db_type=db_type
+                db_type=db_type,
+                sub_query_id=sub_query.id
             )
         except Exception as e:
             logger.error(
@@ -195,7 +197,9 @@ async def _process_single_subquery(
             result = await stage5_execution.execute_sql(
                 sql=sql,
                 context=context,
-                db_type=db_type
+                db_type=db_type,
+                sub_query_id=sub_query.id,
+                diag_ctx=diag_ctx
             )
             logger.debug(
                 f"子查询完成 | {sub_query.id} | 状态: {result.status.value}",

@@ -364,6 +364,14 @@ class JinaProvider(BaseAIProvider):
         
         HTTPStatusError（4xx/5xx）不重试，避免把业务错误当网络抖动。
         """
+        # 检测 NO_NETWORK 环境变量（用于非 live 测试）
+        no_network = os.getenv("NO_NETWORK", "").lower() in ("1", "true", "yes")
+        if no_network:
+            raise RuntimeError(
+                f"Network call detected in offline test mode (NO_NETWORK=1). "
+                f"Provider: jina, Method: embed, Model: {model}. "
+                f"Please mock the provider method before calling."
+            )
         if not self.api_key:
             raise ValueError("JINA_API_KEY is required")
         
@@ -568,6 +576,14 @@ class JinaProvider(BaseAIProvider):
         **kwargs: Any
     ) -> str:
         """执行聊天补全（返回文本）"""
+        # 检测 NO_NETWORK 环境变量（用于非 live 测试）
+        no_network = os.getenv("NO_NETWORK", "").lower() in ("1", "true", "yes")
+        if no_network:
+            raise RuntimeError(
+                f"Network call detected in offline test mode (NO_NETWORK=1). "
+                f"Provider: jina, Method: chat, Model: {model}. "
+                f"Please mock the provider method before calling."
+            )
         raise NotImplementedError("JinaProvider does not support chat yet.")
     
     async def chat_json(
@@ -578,6 +594,14 @@ class JinaProvider(BaseAIProvider):
         max_tokens: Optional[int] = None,
         **kwargs: Any
     ) -> Dict[str, Any]:
+        # 检测 NO_NETWORK 环境变量（用于非 live 测试）
+        no_network = os.getenv("NO_NETWORK", "").lower() in ("1", "true", "yes")
+        if no_network:
+            raise RuntimeError(
+                f"Network call detected in offline test mode (NO_NETWORK=1). "
+                f"Provider: jina, Method: chat_json, Model: {model}. "
+                f"Please mock the provider method before calling."
+            )
         """执行聊天补全（返回 JSON 对象）"""
         raise NotImplementedError("JinaProvider does not support chat_json yet.")
     

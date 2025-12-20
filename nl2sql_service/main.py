@@ -204,6 +204,10 @@ async def lifespan(app: FastAPI):
             if _ai_client is not None:
                 await _ai_client.close()
             
+            # 关闭 SemanticRegistry（包括 Qdrant 客户端）
+            if registry:
+                await registry.close()
+            
             # 关闭数据库连接池
             await close_all()
             
@@ -959,7 +963,8 @@ async def generate_plan(
         validated_plan = await stage3_validation.validate_and_normalize_plan(
             plan=plan,
             context=query_desc.request_context,
-            registry=registry
+            registry=registry,
+            sub_query_id=first_sub_query.id
         )
         stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
         
@@ -1086,7 +1091,8 @@ async def generate_sql_from_plan(
             plan=request.plan,
             context=request.request_context,
             registry=registry,
-            db_type=db_type
+            db_type=db_type,
+            sub_query_id=None  # /nl2sql/sql 端点没有子查询概念
         )
         
         logger.info(
@@ -1232,7 +1238,8 @@ async def _execute_with_debug(
             validated_plan = await stage3_validation.validate_and_normalize_plan(
                 plan=plan,
                 context=query_desc.request_context,
-                registry=registry
+                registry=registry,
+                sub_query_id=sub_query.id
             )
             stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
             validated_plans.append(validated_plan.model_dump())
@@ -1282,7 +1289,8 @@ async def _execute_with_debug(
                 plan=validated_plan,
                 context=query_desc.request_context,
                 registry=registry,
-                db_type=db_type
+                db_type=db_type,
+                sub_query_id=sub_query.id
             )
             stage4_ms = int((time.perf_counter() - stage4_start) * 1000)
             sql_queries.append(sql)
@@ -1318,7 +1326,8 @@ async def _execute_with_debug(
             result = await stage5_execution.execute_sql(
                 sql=sql,
                 context=query_desc.request_context,
-                db_type=db_type
+                db_type=db_type,
+                sub_query_id=sub_query.id
             )
             stage5_ms = int((time.perf_counter() - stage5_start) * 1000)
             

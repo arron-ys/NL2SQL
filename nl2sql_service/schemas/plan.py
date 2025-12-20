@@ -192,11 +192,11 @@ class TimeRange(BaseModel):
     @classmethod
     def fix_nested_absolute_structure(cls, data: Any) -> Any:
         """
-        兼容性修复：处理 LLM 偶尔产生的嵌套结构幻觉。
+        验证 time_range 结构：拒绝嵌套的 ABSOLUTE 结构（按测试契约要求）。
         
-        LLM 有时会错误地将 ABSOLUTE 类型的 start/end 嵌套在 value 字段中：
+        根据测试契约，遇到嵌套的 ABSOLUTE 结构必须抛出 ValidationError：
         错误: {"type": "ABSOLUTE", "value": {"start": "...", "end": "..."}}
-        修正: {"type": "ABSOLUTE", "start": "...", "end": "..."}
+        应该: 抛出 ValidationError（不允许容错修复）
         """
         # 确保 data 是字典且类型为 ABSOLUTE
         if not isinstance(data, dict):
@@ -204,16 +204,13 @@ class TimeRange(BaseModel):
             
         if data.get('type') == 'ABSOLUTE':
             val = data.get('value')
-            # 如果 value 是一个字典（说明 LLM 犯错了）
-            if isinstance(val, dict):
-                # 1. 将嵌套的 start/end 提取到顶层
-                if 'start' in val:
-                    data['start'] = val['start']
-                if 'end' in val:
-                    data['end'] = val['end']
-                
-                # 2. 删除错误的 value 字段（使用 pop 避免 KeyError）
-                data.pop('value', None)
+            # 如果 value 是一个字典且包含 start/end（说明结构错误），按测试契约要求抛出错误
+            if isinstance(val, dict) and ('start' in val or 'end' in val):
+                # 抛出 ValueError，Pydantic 会自动包装为 ValidationError
+                raise ValueError(
+                    "Invalid nested structure: start/end should be at top level for ABSOLUTE time_range, "
+                    f"not nested in 'value'. Got: {val}"
+                )
                 
         return data
 

@@ -11,6 +11,24 @@ import sys
 import warnings
 from pathlib import Path
 
+# ============================================================
+# 关键修复：在导入 pytest 之前设置编码，确保 pytest 捕获缓冲区使用 UTF-8
+# ============================================================
+# Windows 下 pytest 的捕获缓冲区默认使用系统编码（GBK），会导致 UnicodeDecodeError
+# 必须在任何文件读取或输出之前设置
+if "PYTHONIOENCODING" not in os.environ:
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+
+# 设置 sys.stdout/stderr 编码（如果支持）
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass  # 某些环境可能不支持 reconfigure
+
 import pytest
 
 # 添加 nl2sql_service 目录到 Python 路径，确保可以从任何目录运行测试
@@ -190,8 +208,35 @@ def pytest_configure(config):
     在测试收集前配置 pytest
     
     根据触发条件加载 .env 文件。
+    同时为非 live 测试设置 QDRANT_MODE=memory（必须在 import 之前设置）。
+    设置 PYTHONIOENCODING=utf-8 确保 pytest 捕获缓冲区使用 UTF-8 编码（修复 Windows 下 UnicodeDecodeError）。
     """
+    # 关键修复：设置 Python IO 编码为 UTF-8，确保 pytest 捕获缓冲区使用 UTF-8
+    # 这必须在任何文件读取或输出之前设置
+    if "PYTHONIOENCODING" not in os.environ:
+        os.environ["PYTHONIOENCODING"] = "utf-8"
+    
+    # 同时设置 sys.stdout/stderr 编码（如果支持）
+    if sys.platform == "win32":
+        try:
+            if hasattr(sys.stdout, 'reconfigure'):
+                sys.stdout.reconfigure(encoding='utf-8')
+            if hasattr(sys.stderr, 'reconfigure'):
+                sys.stderr.reconfigure(encoding='utf-8')
+        except Exception:
+            pass  # 某些环境可能不支持 reconfigure
+    
     _load_dotenv_if_needed(config)
+    
+    # 在 pytest_configure 阶段就设置 VECTOR_STORE_MODE=memory（如果当前没有 live marker）
+    # 注意：此时还没有测试项，我们只能根据命令行参数判断
+    try:
+        markexpr = config.getoption("-m", default=None) or config.getoption("--markexpr", default=None)
+        if markexpr and "live" not in markexpr.lower():
+            # 非 live 测试：强制 memory 模式
+            os.environ["VECTOR_STORE_MODE"] = "memory"
+    except (ValueError, AttributeError):
+        pass
 
 
 # 定义必须至少拥有 1 个的"分层 marker"集合
@@ -220,7 +265,6 @@ path_marker_map = {
     "test_plan_api.py": ["integration"],
     "test_plan_error_response.py": ["integration"],
     "test_execute_error_response.py": ["integration"],
-    "test_execute_error_response_debug.py": ["integration"],
     "test_plan_regression.py": ["regression", "integration"],
     "test_e2e_pipeline.py": ["e2e"],
     "test_security.py": ["security"],
@@ -232,10 +276,16 @@ path_marker_map = {
     "test_stage3_permission_denied_on_warning.py": ["unit"],
     "test_plan_permission_denied_soft_error.py": ["integration"],
     "test_execute_permission_denied_goes_to_stage6.py": ["integration"],
+    "test_prompt_templates.py": ["unit"],
+    "test_ai_client_fallback.py": ["unit"],
+    "test_default_inference.py": ["unit"],
+    "test_dialect_differences.py": ["unit"],
+    "test_resource_cleanup.py": ["unit"],
     # Live 测试文件（使用完整相对路径避免冲突）
+    # 注意：live 测试只允许有 live marker，不允许 unit/integration
     "live/test_e2e_live.py": ["e2e", "slow", "live"],
-    "live/test_db_connection.py": ["integration", "live"],
-    "live/test_api_execute.py": ["integration", "live"],
+    "live/test_db_connection.py": ["live"],
+    "live/test_api_execute.py": ["live"],
     # Evaluation 测试文件（性能评估）
     "evaluation/test_performance_live.py": ["performance", "slow", "live"],
 }
@@ -320,6 +370,7 @@ def pytest_collection_modifyitems(config, items):
     # 补充检查：如果之前没有加载 .env，现在根据测试项路径再次检查
     _load_dotenv_if_needed(config, check_paths_from_items=items)
     
+    
     # 收集所有未归类的测试项（用于错误报告）
     unmarked_items = []
     
@@ -348,10 +399,56 @@ def pytest_collection_modifyitems(config, items):
                     # 更新 existing_markers（用于后续校验）
                     existing_markers.add(marker_name)
         
+        # ============================================================
+        # 强制 live 目录语义：live 测试不允许属于 unit/integration
+        # ============================================================
+        # 检查是否在 live 目录下（兼容 Windows 和 Linux 路径）
+        nodeid_str = item.nodeid.replace("\\", "/").lower()
+        relative_path_lower = relative_path.replace("\\", "/").lower()
+        is_live_test = (
+            "tests/live/" in nodeid_str or
+            "tests\\live\\" in nodeid_str or
+            relative_path_lower.startswith("live/") or
+            relative_path_lower.startswith("live\\")
+        )
+        
+        if is_live_test:
+            # 强制追加 live marker（如果还没有）
+            if "live" not in existing_markers:
+                item.add_marker(pytest.mark.live)
+                existing_markers.add("live")
+            
+            # 检查并移除污染：如果 live 测试同时拥有 unit 或 integration marker，直接失败
+            conflicting_markers = []
+            for marker in item.iter_markers():
+                if marker.name in ("unit", "integration"):
+                    conflicting_markers.append(marker.name)
+                    # 移除冲突的 marker
+                    item.own_markers = [m for m in item.own_markers if m.name != marker.name]
+            
+            if conflicting_markers:
+                # 从 nodeid 中提取更清晰的路径信息
+                file_path = str(item.path) if hasattr(item, "path") and item.path else item.nodeid
+                raise AssertionError(
+                    f"\n{'=' * 80}\n"
+                    f"ERROR: Live test has conflicting markers\n"
+                    f"{'=' * 80}\n"
+                    f"Test: {item.nodeid}\n"
+                    f"File: {file_path}\n"
+                    f"Conflicting markers: {', '.join(conflicting_markers)}\n"
+                    f"\n"
+                    f"Live tests are NOT allowed to have 'unit' or 'integration' markers.\n"
+                    f"Please remove @pytest.mark.{conflicting_markers[0]} (and any other conflicting markers)\n"
+                    f"from the test or from conftest.py path_marker_map.\n"
+                    f"{'=' * 80}\n"
+                )
+        
         # 强制校验：检查是否至少拥有一个分层 marker
+        # 例外：live 测试不需要分层 marker（它们有自己的 live marker）
+        has_live_marker = "live" in existing_markers
         has_layer_marker = any(m.name in LAYER_MARKERS for m in item.iter_markers())
         
-        if not has_layer_marker:
+        if not has_layer_marker and not has_live_marker:
             # 收集未归类的测试项信息
             item_path = str(item.path) if hasattr(item, "path") and item.path else "N/A"
             # 获取当前所有 markers（包括非分层的）
@@ -410,6 +507,47 @@ def pytest_collection_modifyitems(config, items):
 
 
 # ============================================================
+# Offline Mode Fixture (for unit/integration tests)
+# ============================================================
+
+@pytest.fixture(autouse=True)
+def enforce_offline_mode(request):
+    """
+    自动应用的 fixture：为非 live 测试强制设置 NO_NETWORK=1 和 QDRANT_MODE=memory
+    
+    这确保 unit/integration 测试不会意外访问真实网络，且不会创建文件锁。
+    live 测试不受此限制。
+    """
+    # 检查当前测试是否有 live marker
+    has_live_marker = any(m.name == "live" for m in request.node.iter_markers())
+    
+    if not has_live_marker:
+        # 非 live 测试：设置 NO_NETWORK=1 和 VECTOR_STORE_MODE=memory
+        original_no_network = os.environ.get("NO_NETWORK")
+        original_vector_store_mode = os.environ.get("VECTOR_STORE_MODE")
+        os.environ["NO_NETWORK"] = "1"
+        os.environ["VECTOR_STORE_MODE"] = "memory"  # 避免文件锁
+        yield
+        # 恢复原始值
+        if original_no_network is None:
+            os.environ.pop("NO_NETWORK", None)
+        else:
+            os.environ["NO_NETWORK"] = original_no_network
+        if original_vector_store_mode is None:
+            os.environ.pop("VECTOR_STORE_MODE", None)
+        else:
+            os.environ["VECTOR_STORE_MODE"] = original_vector_store_mode
+    else:
+        # live 测试：确保 NO_NETWORK 未设置，但保留 QDRANT_MODE（如果有）
+        original_no_network = os.environ.get("NO_NETWORK")
+        os.environ.pop("NO_NETWORK", None)
+        yield
+        # 恢复原始值
+        if original_no_network is not None:
+            os.environ["NO_NETWORK"] = original_no_network
+
+
+# ============================================================
 # Standard Test Client Fixtures
 # ============================================================
 
@@ -458,3 +596,114 @@ async def async_client():
         # 在 lifespan 上下文中创建 client
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
             yield ac
+
+
+# ============================================================
+# Mock Fixtures
+# ============================================================
+
+from unittest.mock import MagicMock
+
+
+@pytest.fixture
+def mock_registry():
+    """
+    创建模拟的 SemanticRegistry
+    
+    统一的mock_registry fixture，提供标准的registry mock配置。
+    所有测试文件应使用此fixture，避免重复定义。
+    """
+    registry = MagicMock()
+    registry.get_allowed_ids.return_value = {
+        "METRIC_GMV",
+        "METRIC_REVENUE",
+        "DIM_REGION",
+        "DIM_DEPARTMENT",
+    }
+    registry.get_metric_def.return_value = {
+        "id": "METRIC_GMV",
+        "entity_id": "ENTITY_ORDER",
+        "default_filters": [],
+        "default_time": None,
+    }
+    registry.get_dimension_def.return_value = {
+        "id": "DIM_REGION",
+        "entity_id": "ENTITY_ORDER",
+    }
+    registry.check_compatibility.return_value = True
+    registry.global_config = {
+        "global_settings": {},
+        "time_windows": [],
+    }
+    return registry
+
+
+# ============================================================
+# Test Helper Functions
+# ============================================================
+
+def format_request_summary(request_payload: dict, trace_id: str = None, response: dict = None) -> str:
+    """
+    格式化请求摘要，用于测试失败时的诊断信息（脱敏处理）
+    
+    Args:
+        request_payload: 请求payload字典
+        trace_id: 可选的trace_id
+        response: 可选的响应字典（用于包含request_id）
+    
+    Returns:
+        格式化的摘要字符串（已脱敏）
+    """
+    summary_parts = []
+    
+    # 请求摘要（脱敏）
+    if request_payload:
+        sanitized_payload = {}
+        for key, value in request_payload.items():
+            if key in ["user_id", "tenant_id"]:
+                # 只显示前3个字符，其余用*替代
+                if isinstance(value, str) and len(value) > 3:
+                    sanitized_payload[key] = value[:3] + "*" * (len(value) - 3)
+                else:
+                    sanitized_payload[key] = value
+            elif key == "question":
+                # 问题只显示前50个字符
+                if isinstance(value, str) and len(value) > 50:
+                    sanitized_payload[key] = value[:50] + "..."
+                else:
+                    sanitized_payload[key] = value
+            else:
+                sanitized_payload[key] = value
+        summary_parts.append(f"Request: {sanitized_payload}")
+    
+    # Trace ID / Request ID
+    if trace_id:
+        summary_parts.append(f"Trace-ID: {trace_id}")
+    if response and isinstance(response, dict):
+        request_id = response.get("request_id")
+        if request_id:
+            summary_parts.append(f"Request-ID: {request_id}")
+    
+    return " | ".join(summary_parts) if summary_parts else "No request info"
+
+
+def assert_with_context(
+    condition: bool,
+    message: str,
+    request_payload: dict = None,
+    trace_id: str = None,
+    response: dict = None
+):
+    """
+    带上下文的断言，失败时输出请求摘要
+    
+    Args:
+        condition: 断言条件
+        message: 断言失败消息
+        request_payload: 请求payload（用于诊断）
+        trace_id: trace_id（用于诊断）
+        response: 响应字典（用于提取request_id）
+    """
+    if not condition:
+        context = format_request_summary(request_payload, trace_id, response)
+        raise AssertionError(f"{message} | Context: {context}")

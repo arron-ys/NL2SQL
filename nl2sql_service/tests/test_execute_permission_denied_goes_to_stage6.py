@@ -16,12 +16,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from freezegun import freeze_time
 
 from main import app
 from schemas.result import ExecutionResult
 
 
 @pytest.mark.integration
+@freeze_time("2024-01-15")
 def test_execute_permission_denied_is_answered_by_stage6_and_sanitized():
     """
     【测试目标】

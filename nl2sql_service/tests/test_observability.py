@@ -39,10 +39,7 @@ from main import app
 # ============================================================
 
 
-@pytest.fixture
-def client():
-    """创建 TestClient 实例"""
-    return TestClient(app)
+# client fixture 已统一到 conftest.py，这里不再重复定义
 
 
 @pytest.fixture
@@ -59,9 +56,10 @@ def log_capture():
     logger.remove(handler_id)
 
 
+# 注意：此文件中的mock_registry有特殊配置，保留本地定义
 @pytest.fixture
 def mock_registry():
-    """创建模拟的 SemanticRegistry"""
+    """创建模拟的 SemanticRegistry（此文件专用配置）"""
     registry = MagicMock()
     registry.get_allowed_ids.return_value = {
         "METRIC_GMV",

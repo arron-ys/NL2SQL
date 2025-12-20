@@ -6,6 +6,7 @@ Stage 2: Plan Generation (计划生成)
 对应详细设计文档 3.2 的定义。
 """
 import asyncio
+import json
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -1106,12 +1107,6 @@ async def process_subquery(
             "warnings": query_plan.warnings if query_plan.warnings else []
         }
         
-        # DEBUG：最终生成的 Skeleton Plan（完整 JSON 禁止在 INFO 输出）
-        logger.debug("=" * 80)
-        logger.debug(f"[Stage 2] 最终生成的 Skeleton Plan (Sub-Query {sub_query.id}):")
-        logger.debug(json.dumps(plan_display, ensure_ascii=False, indent=2))
-        logger.debug("=" * 80)
-        
         # 合并为一条简洁的完成日志
         stage2_ms = int((time.perf_counter() - stage2_start) * 1000)
         logger.info(
@@ -1148,6 +1143,13 @@ async def process_subquery(
                 "warnings": plan_display["warnings"],
             },
         )
+        
+        # ============================================================
+        # 产出物日志：Skeleton Plan JSON（单条日志输出完整 JSON）
+        # ============================================================
+        skeleton_plan_dict = query_plan.model_dump()
+        plan_json_str = json.dumps(skeleton_plan_dict, ensure_ascii=False, indent=2)
+        logger.info(f"【STAGE2关键产物：PLAN_SKELETON】 request_id={context.request_id} sub_query_id={sub_query.id} json=\n{plan_json_str}")
         
         return query_plan
     

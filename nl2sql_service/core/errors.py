@@ -70,3 +70,31 @@ class AppError(Exception):
     def __str__(self) -> str:  # for logs only
         return self.message
 
+
+# ============================================================
+# Provider-level stable exceptions (for fallback logic)
+# ============================================================
+
+class ProviderConnectionError(Exception):
+    """
+    稳定的 Provider 连接异常（用于 fallback 逻辑）
+    
+    替代 OpenAI SDK 的 APIConnectionError，避免因 SDK 版本变化导致测试脆弱。
+    """
+    def __init__(self, message: str, provider: str = None, original_error: Exception = None):
+        super().__init__(message)
+        self.provider = provider
+        self.original_error = original_error
+
+
+class ProviderRateLimitError(Exception):
+    """
+    稳定的 Provider 限流异常（用于 fallback 逻辑）
+    
+    替代 OpenAI SDK 的 RateLimitError，避免因 SDK 版本变化导致测试脆弱。
+    """
+    def __init__(self, message: str, provider: str = None, original_error: Exception = None):
+        super().__init__(message)
+        self.provider = provider
+        self.original_error = original_error
+

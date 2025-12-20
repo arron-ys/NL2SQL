@@ -101,6 +101,43 @@ class SemanticRegistry:
         
         logger.info("SemanticRegistry instance created")
     
+    async def close(self) -> None:
+        """
+        关闭 SemanticRegistry 并清理资源
+        
+        主要清理 Qdrant 客户端连接，避免资源泄漏和文件锁未关闭。
+        """
+        if self.qdrant_client:
+            try:
+                # AsyncQdrantClient 需要调用 close() 方法
+                # 注意：AsyncQdrantClient 可能没有 close/aclose 方法，需要检查
+                if hasattr(self.qdrant_client, "close"):
+                    close_method = getattr(self.qdrant_client, "close")
+                    if asyncio.iscoroutinefunction(close_method):
+                        await close_method()
+                    else:
+                        close_method()
+                elif hasattr(self.qdrant_client, "aclose"):
+                    aclose_method = getattr(self.qdrant_client, "aclose")
+                    if asyncio.iscoroutinefunction(aclose_method):
+                        await aclose_method()
+                    else:
+                        aclose_method()
+                # 如果都没有，尝试访问 _client 属性（内部 HTTP 客户端）
+                elif hasattr(self.qdrant_client, "_client"):
+                    client = getattr(self.qdrant_client, "_client")
+                    if hasattr(client, "close"):
+                        close_method = getattr(client, "close")
+                        if asyncio.iscoroutinefunction(close_method):
+                            await close_method()
+                        else:
+                            close_method()
+                logger.debug("Qdrant client closed successfully")
+            except Exception as e:
+                logger.warning(f"Error closing Qdrant client: {e}")
+            finally:
+                self.qdrant_client = None
+    
     @classmethod
     async def get_instance(cls) -> "SemanticRegistry":
         """
@@ -514,11 +551,20 @@ class SemanticRegistry:
         stored_fingerprint = await self._get_stored_fingerprint()
         
         # Step 3: 分支处理
+        # 检查是否在离线模式（NO_NETWORK=1）
+        no_network = os.getenv("NO_NETWORK", "").lower() in ("1", "true", "yes")
+        
         if stored_fingerprint == current_fingerprint:
             # 快速路径：指纹一致，仅加载 YAML 到内存
             logger.info("快速加载 | 指纹匹配，跳过向量索引")
             yaml_data = await asyncio.to_thread(self._load_yaml_files, yaml_path)
             self._build_metadata_map(yaml_data)
+        elif no_network:
+            # 离线模式：跳过向量索引重建，仅加载 YAML 到内存
+            logger.info("离线模式 | 跳过向量索引重建（NO_NETWORK=1），仅加载 YAML 配置")
+            yaml_data = await asyncio.to_thread(self._load_yaml_files, yaml_path)
+            self._build_metadata_map(yaml_data)
+            # 注意：离线模式下不存储指纹，因为索引未重建
         else:
             # 重新索引：指纹不一致，需要重建向量索引
             logger.info("重建索引 | 指纹不匹配，重建向量索引")
@@ -545,8 +591,16 @@ class SemanticRegistry:
         
         默认行为：如果未设置 VECTOR_STORE_MODE 或值为无效，一律使用 local 模式。
         Remote 模式仅在明确设置 VECTOR_STORE_MODE=remote 时启用。
+        
+        注意：在离线测试模式（NO_NETWORK=1）下，强制使用 memory 模式，避免文件锁。
         """
-        mode = os.getenv("VECTOR_STORE_MODE", "local").lower()
+        # 检查是否在离线模式，如果是，强制使用 memory 模式
+        no_network = os.getenv("NO_NETWORK", "").lower() in ("1", "true", "yes")
+        if no_network:
+            mode = "memory"
+            logger.debug("Offline mode detected (NO_NETWORK=1), forcing VECTOR_STORE_MODE=memory")
+        else:
+            mode = os.getenv("VECTOR_STORE_MODE", "local").lower()
         
         if mode == "memory":
             # Memory 模式：使用内存存储

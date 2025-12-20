@@ -38,10 +38,7 @@ test_logger = get_logger(__name__)
 # Test Fixtures
 # ============================================================
 
-@pytest.fixture
-def client():
-    """创建 TestClient 实例"""
-    return TestClient(app)
+# client fixture 已统一到 conftest.py，这里不再重复定义
 
 
 @pytest.fixture

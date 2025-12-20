@@ -73,29 +73,45 @@ class ExecutionResult(BaseModel):
     @classmethod
     def create_success(
         cls,
-        columns: List[str],
-        rows: List[List[Any]],
-        is_truncated: bool,
-        latency_ms: int,
-        row_count: int,
-        executed_at: Optional[datetime] = None
+        columns: Optional[List[str]] = None,
+        rows: Optional[List[List[Any]]] = None,
+        is_truncated: bool = False,
+        latency_ms: int = 0,
+        row_count: Optional[int] = None,
+        executed_at: Optional[datetime] = None,
+        data: Optional[List[Any]] = None  # 兼容参数：作为 rows 的别名
     ) -> "ExecutionResult":
         """
         创建成功结果
         
         Args:
-            columns: 列名列表
-            rows: 行数据列表
+            columns: 列名列表（如果为 None 且 data 不为空，则从 data 推断）
+            rows: 行数据列表（如果为 None，使用 data 参数）
             is_truncated: 是否被截断
             latency_ms: 执行耗时（毫秒）
-            row_count: 实际返回行数
+            row_count: 实际返回行数（如果为 None，从 rows/data 推断）
             executed_at: 执行时间戳，如果为 None 则使用当前时间
+            data: 兼容参数，作为 rows 的别名（向后兼容）
         
         Returns:
             ExecutionResult: 成功结果对象
         """
         if executed_at is None:
             executed_at = datetime.now()
+        
+        # 兼容处理：如果提供了 data 参数，将其作为 rows
+        if rows is None and data is not None:
+            rows = data if isinstance(data, list) else []
+        
+        # 如果 rows 仍为 None，使用空列表
+        if rows is None:
+            rows = []
+        
+        # 推断 columns 和 row_count
+        if columns is None:
+            columns = []
+        if row_count is None:
+            row_count = len(rows)
         
         return cls(
             status=ExecutionStatus.SUCCESS,

@@ -83,6 +83,8 @@ def test_init_clients_remote_mode_with_url(monkeypatch):
     2. url 参数为配置的 QDRANT_URL
     3. api_key 参数为配置的 QDRANT_API_KEY
     """
+    # 明确禁用离线模式，以便测试 remote 模式
+    monkeypatch.delenv("NO_NETWORK", raising=False)
     monkeypatch.setenv("VECTOR_STORE_MODE", "remote")
     monkeypatch.setenv("QDRANT_URL", "http://localhost:6333")
     monkeypatch.setenv("QDRANT_API_KEY", "test_key")
@@ -118,6 +120,8 @@ def test_init_clients_remote_mode_host_port_fallback(monkeypatch):
     2. host 参数为 "localhost"，port 参数为 6333（int）
     3. kwargs 中不包含 url 参数
     """
+    # 明确禁用离线模式，以便测试 remote 模式
+    monkeypatch.delenv("NO_NETWORK", raising=False)
     monkeypatch.setenv("VECTOR_STORE_MODE", "remote")
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.setenv("QDRANT_HOST", "localhost")
@@ -155,6 +159,8 @@ def test_init_clients_local_default_path(monkeypatch, tmp_path):
     2. AsyncQdrantClient 使用 path 参数调用
     3. path 为默认目录路径
     """
+    # 明确禁用离线模式，以便测试 local 模式
+    monkeypatch.delenv("NO_NETWORK", raising=False)
     # 不设置 mode -> 默认 local
     monkeypatch.delenv("VECTOR_STORE_MODE", raising=False)
     monkeypatch.delenv("VECTOR_STORE_PATH", raising=False)
@@ -191,6 +197,8 @@ def test_init_clients_local_custom_vector_store_path(monkeypatch, tmp_path):
     2. AsyncQdrantClient 使用 path 参数调用
     3. path 为自定义目录路径
     """
+    # 明确禁用离线模式，以便测试 local 模式
+    monkeypatch.delenv("NO_NETWORK", raising=False)
     monkeypatch.setenv("VECTOR_STORE_MODE", "local")
     custom_dir = tmp_path / "custom_qdrant"
     monkeypatch.setenv("VECTOR_STORE_PATH", str(custom_dir))

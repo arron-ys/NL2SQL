@@ -17,6 +17,7 @@ from schemas.request import (
     SubQueryItem
 )
 from utils.log_manager import get_logger, get_request_id, set_request_id
+from utils.log_preview_helper import preview_text
 from utils.prompt_templates import PROMPT_SUBQUERY_DECOMPOSITION
 
 logger = get_logger(__name__)
@@ -214,21 +215,9 @@ async def process_request(
         sub_queries=normalized_sub_queries
     )
     
-    # 计算耗时并输出汇总日志
+    # 计算耗时
     stage1_ms = int((time.perf_counter() - stage1_start) * 1000)
     
-    # 合并为一条简洁的完成日志
-    sub_query_summaries = [f"{idx}. {sq.description}" for idx, sq in enumerate(normalized_sub_queries, 1)]
-    logger.info(
-        f"Stage 1 完成 | 查询分解 | 子查询数: {len(normalized_sub_queries)} | 耗时: {stage1_ms}ms\n" + 
-        "\n".join(sub_query_summaries),
-        extra={
-            "sub_query_count": len(normalized_sub_queries),
-            "request_id": request_id,
-            "stage1_ms": stage1_ms,
-        }
-    )
-
     # DEBUG：详细信息用于问题排查
     logger.debug(
         "Stage 1 详情",
@@ -237,5 +226,20 @@ async def process_request(
             "sub_queries": [{"id": sq.id, "description": sq.description} for sq in normalized_sub_queries],
         }
     )
+    
+    # ============================================================
+    # 产出物日志：子查询拆解结果（每条日志独立，单行输出）
+    # ============================================================
+    # 第1条：总览日志（包含耗时）
+    logger.info(
+        f"【STAGE1关键产物：SUB_QUERIES】 request_id={request_id} sub_query_count={len(normalized_sub_queries)} stage1_ms={stage1_ms}"
+    )
+    
+    # 逐条输出每个子查询（每条都是独立的单行日志）
+    for idx, sq in enumerate(normalized_sub_queries, 1):
+        sub_query_preview = preview_text(sq.description, head=300)
+        logger.info(
+            f"【STAGE1关键产物：SUB_QUERY】 request_id={request_id} idx={idx} sub_query_id={sq.id} sub_query={sub_query_preview}"
+        )
     
     return query_request_description

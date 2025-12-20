@@ -40,12 +40,10 @@ from main import app
 # ============================================================
 
 
-@pytest.fixture
-def client():
-    """创建 TestClient 实例"""
-    return TestClient(app)
+# client fixture 已统一到 conftest.py，这里不再重复定义
 
 
+# 注意：此文件中的mock_registry有权限测试的特殊配置，保留本地定义
 @pytest.fixture
 def mock_registry():
     """创建模拟的 SemanticRegistry，支持权限测试"""

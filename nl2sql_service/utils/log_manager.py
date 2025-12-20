@@ -15,19 +15,38 @@ from loguru import logger
 # ============================================================
 # 设置控制台编码为 UTF-8（修复中文乱码问题）
 # ============================================================
-if sys.platform == "win32":
-    # Windows 系统需要设置控制台编码为 UTF-8
-    try:
-        # 设置标准输出和标准错误输出为 UTF-8
-        if hasattr(sys.stdout, 'reconfigure'):
-            sys.stdout.reconfigure(encoding='utf-8')
-        if hasattr(sys.stderr, 'reconfigure'):
-            sys.stderr.reconfigure(encoding='utf-8')
-        # 设置环境变量
-        os.environ['PYTHONIOENCODING'] = 'utf-8'
-    except Exception:
-        # 如果设置失败，忽略错误（某些环境可能不支持）
-        pass
+def _ensure_utf8_streams():
+    """
+    确保 stdout/stderr 使用 UTF-8 编码（兼容 pytest 捕获模式）
+    
+    关键修复：
+    1. 在 Windows 上，pytest 的捕获对象可能使用系统默认编码（GBK）
+    2. 当 loguru 写入包含中文的日志时，如果捕获对象编码不是 UTF-8，会导致 UnicodeDecodeError
+    3. 使用 errors="replace" 确保即使编码失败也不会崩溃
+    """
+    if sys.platform == "win32":
+        try:
+            # 设置环境变量（必须在 reconfigure 之前）
+            if "PYTHONIOENCODING" not in os.environ:
+                os.environ['PYTHONIOENCODING'] = 'utf-8'
+            
+            # 对 stdout/stderr 进行 UTF-8 reconfigure（兼容 pytest 捕获对象）
+            # 使用 errors="replace" 确保即使编码失败也不会崩溃
+            for stream in [sys.stdout, sys.stderr]:
+                if hasattr(stream, 'reconfigure'):
+                    try:
+                        # 尝试 reconfigure 为 UTF-8，如果失败则使用 replace 策略
+                        stream.reconfigure(encoding='utf-8', errors='replace')
+                    except (AttributeError, ValueError, TypeError):
+                        # 某些流（如 pytest 捕获对象）可能不支持 reconfigure
+                        # 或者已经配置过，忽略错误
+                        pass
+        except Exception:
+            # 如果设置失败，忽略错误（某些环境可能不支持）
+            pass
+
+# 在模块导入时立即执行（在任何 logger 配置之前）
+_ensure_utf8_streams()
 
 # ============================================================
 # PID Guard：防止多进程/热重载场景下重复配置
@@ -181,6 +200,10 @@ def configure_logger():
     """
     global _CONFIGURED_PID
     
+    # 关键修复：在配置 logger 之前，确保 stdout/stderr 使用 UTF-8 编码
+    # 这必须在每次 configure_logger 调用时执行，因为 pytest 可能在测试之间替换 sys.stdout
+    _ensure_utf8_streams()
+    
     # PID Guard：检查当前进程是否已配置
     current_pid = os.getpid()
     if _CONFIGURED_PID == current_pid:
@@ -208,6 +231,8 @@ def configure_logger():
     # INFO sink：始终存在
     # 当 LOG_LEVEL=DEBUG 时，INFO sink 仍用 INFO（避免与 DEBUG sink 重复）
     info_level = "INFO" if log_level == "DEBUG" else log_level
+    # 关键修复：确保使用文本流（sys.stdout），而不是 bytes 流
+    # loguru 会自动使用 stream 的编码，通过 _ensure_utf8_streams() 已确保 stream 使用 UTF-8
     logger.add(
         sys.stdout,
         format=BASE_FORMAT,

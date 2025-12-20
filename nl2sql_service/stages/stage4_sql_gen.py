@@ -32,6 +32,7 @@ from schemas.plan import (
 )
 from schemas.request import RequestContext
 from utils.log_manager import get_logger
+from utils.log_preview_helper import preview_text
 
 logger = get_logger(__name__)
 
@@ -224,8 +225,10 @@ async def generate_sql(
     plan: QueryPlan,
     context: RequestContext,
     registry: SemanticRegistry,
-    db_type: str
-) -> str:
+    db_type: str,
+    *,
+    sub_query_id: Optional[str] = None
+) -> tuple[str, Optional[dict]]:
     """
     生成 SQL 查询字符串
     
@@ -234,9 +237,17 @@ async def generate_sql(
         context: 请求上下文
         registry: SemanticRegistry 实例
         db_type: 数据库类型（"mysql" 或 "postgresql"）
+        sub_query_id: 子查询 ID（可选）
     
     Returns:
-        str: SQL 查询字符串
+        tuple[str, Optional[dict]]: (SQL 查询字符串, 诊断上下文)
+        诊断上下文包含：
+        - view_name: 语义视图名（如 v_sales_order_item）
+        - time_field: 时间字段名（如 order_date）
+        - time_start: 时间范围开始（ISO 格式字符串，无则为 None）
+        - time_end: 时间范围结束（ISO 格式字符串，无则为 None）
+        - tenant_field: 租户字段名（默认 tenant_id）
+        - tenant_id: 租户 ID（无则为 None）
     
     Raises:
         Stage4Error: 当 SQL 生成失败时抛出
@@ -432,6 +443,16 @@ async def generate_sql(
         query = query.select("*")
         logger.warning("No select fields, using SELECT *")
     
+    # 初始化诊断上下文（用于 Stage5 诊断）
+    diag_ctx: Optional[dict] = {
+        "view_name": semantic_view,
+        "time_field": None,
+        "time_start": None,
+        "time_end": None,
+        "tenant_field": "tenant_id",
+        "tenant_id": context.tenant_id
+    }
+    
     # Step 3: Filtering (WHERE Clause)
     where_criteria = []
     
@@ -474,6 +495,11 @@ async def generate_sql(
                 where_criteria.append(time_field >= start_date)
             if end_date:
                 where_criteria.append(time_field <= end_date)
+            
+            # 更新诊断上下文
+            diag_ctx["time_field"] = time_col_name
+            diag_ctx["time_start"] = start_date
+            diag_ctx["time_end"] = end_date
             
             logger.debug(
                 "Added time range filter",
@@ -587,7 +613,17 @@ async def generate_sql(
             }
         )
         
-        return sql_string
+        # ============================================================
+        # 产出物日志：生成的 SQL（单行输出，避免空白）
+        # ============================================================
+        sql_preview = preview_text(sql_string, head=1200, label="sql")
+        # preview_text 返回的是单行字符串（换行符已替换为 \n），直接输出即可
+        sub_query_id_part = f" sub_query_id={sub_query_id}" if sub_query_id else ""
+        logger.info(
+            f"【STAGE4关键产物：SQL】 request_id={context.request_id}{sub_query_id_part} {sql_preview}"
+        )
+        
+        return sql_string, diag_ctx
     
     except Exception as e:
         logger.error(

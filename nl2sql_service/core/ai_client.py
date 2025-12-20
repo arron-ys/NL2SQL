@@ -7,6 +7,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils.log_manager import get_logger
+from core.errors import ProviderConnectionError, ProviderRateLimitError
 from .providers.base import BaseAIProvider
 from .providers.openai_provider import OpenAIProvider
 from .providers.jina_provider import JinaProvider
@@ -545,6 +546,69 @@ class AIClient:
     # 通用方法接口
     # ============================================================
     
+    def _get_fallback_providers(self, primary_provider_name: str, usage_key: str) -> List[tuple]:
+        """
+        获取备用 provider 列表（按优先级排序）
+        
+        Args:
+            primary_provider_name: 主 provider 名称
+            usage_key: 使用场景标识
+        
+        Returns:
+            List[tuple]: [(provider_name, provider_instance, model_name), ...]
+        """
+        fallback_order = ["openai", "deepseek", "qwen"]
+        
+        # 移除主 provider
+        if primary_provider_name in fallback_order:
+            fallback_order.remove(primary_provider_name)
+        
+        # Provider 默认模型映射（用于 fallback 时找不到配置的情况）
+        default_models = {
+            "openai": "gpt-4o-mini",
+            "deepseek": "deepseek-reasoner",
+            "qwen": "qwen-max",
+        }
+        
+        fallback_list = []
+        model_mapping = self.config.get("model_mapping", {})
+        usage_mapping = model_mapping.get(usage_key, {})
+        
+        for provider_name in fallback_order:
+            if provider_name in self._providers:
+                # 尝试获取该 provider 对应的模型
+                model_name = None
+                
+                # 策略1：如果 usage_key 的 mapping 中有该 provider，使用它
+                if usage_mapping.get("provider") == provider_name:
+                    model_name = usage_mapping.get("model")
+                
+                # 策略2：从 model_mapping 中查找该 provider 的模型（任何 usage_key）
+                if not model_name:
+                    for key, mapping in model_mapping.items():
+                        if mapping.get("provider") == provider_name:
+                            model_name = mapping.get("model")
+                            break
+                
+                # 策略3：使用该 provider 的默认模型
+                if not model_name:
+                    model_name = default_models.get(provider_name)
+                
+                # 如果找到了模型，添加到 fallback 列表
+                if model_name:
+                    fallback_list.append((provider_name, self._providers[provider_name], model_name))
+                else:
+                    logger.warning(
+                        f"Cannot determine model for fallback provider '{provider_name}', skipping",
+                        extra={
+                            "usage_key": usage_key,
+                            "primary_provider": primary_provider_name,
+                            "fallback_provider": provider_name
+                        }
+                    )
+        
+        return fallback_list
+    
     async def call_model(
         self,
         usage_key: str,
@@ -554,7 +618,7 @@ class AIClient:
         **kwargs: Any
     ) -> Any:
         """
-        通用模型调用方法
+        通用模型调用方法（支持降级）
         
         Args:
             usage_key: 使用场景标识
@@ -563,31 +627,150 @@ class AIClient:
             **kwargs: 其他参数
         
         Returns:
-            Any: 根据 usage_key 返回相应类型的结果
+            Any: 根据 usage_key 返回相应类型的结果（如果是降级，结果中可能包含 degraded 标志）
+        
+        Raises:
+            Exception: 如果主 provider 和所有备用 provider 都失败
         """
         provider, model = self._resolve_model(usage_key)
+        primary_provider_name = None
         
-        # 根据 usage_key 判断调用哪个方法
+        # 查找主 provider 名称
+        for name, prov in self._providers.items():
+            if prov == provider:
+                primary_provider_name = name
+                break
+        
+        # 参数验证：必须在进入 provider 之前完成，且不能被 fallback 逻辑捕获
         if usage_key == "embedding":
             if not texts:
                 raise ValueError("texts parameter is required for embedding usage_key")
-            return await provider.embed(texts=texts, model=model, **kwargs)
         else:
             if not messages:
                 raise ValueError("messages parameter is required for chat usage_key")
-            # 检查是否是 JSON 模式（通过 usage_key 判断）
-            if usage_key in ["plan_generation", "query_decomposition"]:
-                return await provider.chat_json(
-                    messages=messages,
-                    model=model,
-                    **kwargs
-                )
+        
+        # 检测 NO_NETWORK 环境变量（用于非 live 测试）
+        # 注意：实际的网络调用检测在 Provider 方法中进行，这里只做参数验证
+        
+        # 定义可降级的异常类型（使用稳定的内部异常）
+        fallbackable_exceptions = (
+            ProviderConnectionError,
+            ProviderRateLimitError,
+            ValueError,  # JSON 解析错误被包装为 ValueError
+        )
+        
+        # 尝试主 provider
+        last_exception = None
+        try:
+            # 根据 usage_key 判断调用哪个方法
+            if usage_key == "embedding":
+                result = await provider.embed(texts=texts, model=model, **kwargs)
             else:
-                return await provider.chat(
-                    messages=messages,
-                    model=model,
-                    **kwargs
-                )
+                # 检查是否是 JSON 模式（通过 usage_key 判断）
+                if usage_key in ["plan_generation", "query_decomposition"]:
+                    result = await provider.chat_json(
+                        messages=messages,
+                        model=model,
+                        **kwargs
+                    )
+                else:
+                    result = await provider.chat(
+                        messages=messages,
+                        model=model,
+                        **kwargs
+                    )
+            
+            # 主 provider 成功，直接返回
+            return result
+            
+        except fallbackable_exceptions as e:
+            last_exception = e
+            logger.warning(
+                f"Primary provider '{primary_provider_name}' failed, attempting fallback",
+                extra={
+                    "usage_key": usage_key,
+                    "primary_provider": primary_provider_name,
+                    "error_type": type(e).__name__,
+                    "error": str(e)
+                }
+            )
+        
+        # 尝试备用 provider（只做一次降级）
+        attempted_providers = [primary_provider_name] if primary_provider_name else []
+        if primary_provider_name:
+            fallback_providers = self._get_fallback_providers(primary_provider_name, usage_key)
+            
+            for fallback_name, fallback_provider, fallback_model in fallback_providers:
+                attempted_providers.append(fallback_name)
+                try:
+                    logger.info(
+                        f"Attempting fallback to provider '{fallback_name}'",
+                        extra={
+                            "usage_key": usage_key,
+                            "fallback_provider": fallback_name,
+                            "fallback_model": fallback_model,
+                            "primary_provider": primary_provider_name
+                        }
+                    )
+                    
+                    # 根据 usage_key 判断调用哪个方法
+                    if usage_key == "embedding":
+                        result = await fallback_provider.embed(texts=texts, model=fallback_model, **kwargs)
+                    else:
+                        if usage_key in ["plan_generation", "query_decomposition"]:
+                            result = await fallback_provider.chat_json(
+                                messages=messages,
+                                model=fallback_model,
+                                **kwargs
+                            )
+                        else:
+                            result = await fallback_provider.chat(
+                                messages=messages,
+                                model=fallback_model,
+                                **kwargs
+                            )
+                    
+                    # 备用 provider 成功，添加降级标志
+                    logger.warning(
+                        f"Fallback to '{fallback_name}' succeeded",
+                        extra={
+                            "usage_key": usage_key,
+                            "fallback_provider": fallback_name,
+                            "primary_provider": primary_provider_name,
+                            "degraded": True
+                        }
+                    )
+                    
+                    # 如果结果是字典，添加 degraded 标志
+                    if isinstance(result, dict):
+                        result["_degraded"] = True
+                        result["_fallback_provider"] = fallback_name
+                        result["_primary_provider"] = primary_provider_name
+                    
+                    return result
+                    
+                except Exception as fallback_error:
+                    logger.warning(
+                        f"Fallback provider '{fallback_name}' also failed",
+                        extra={
+                            "usage_key": usage_key,
+                            "fallback_provider": fallback_name,
+                            "error_type": type(fallback_error).__name__,
+                            "error": str(fallback_error)
+                        }
+                    )
+                    last_exception = fallback_error
+                    continue
+        
+        # 所有 provider 都失败，抛出异常
+        primary_error = str(last_exception) if last_exception else "Unknown error"
+        attempted_list = ", ".join(attempted_providers) if attempted_providers else "none"
+        raise Exception(
+            f"All providers failed for usage_key '{usage_key}'. "
+            f"Attempted providers: [{attempted_list}]. "
+            f"Primary provider '{primary_provider_name}' error: {primary_error}. "
+            f"Last error: {primary_error}"
+        ) from last_exception
     
     @classmethod
     def init_from_settings(cls, settings: Any) -> "AIClient":

@@ -5,6 +5,7 @@ Stage 5: SQL Execution (SQL 执行)
 对应详细设计文档 3.5 的定义。
 """
 import base64
+import os
 import time
 from datetime import datetime, date
 from decimal import Decimal
@@ -19,6 +20,7 @@ from core.dialect_adapter import DialectAdapter
 from schemas.request import RequestContext
 from schemas.result import ExecutionResult, ExecutionStatus
 from utils.log_manager import get_logger
+from utils.log_preview_helper import preview_text, preview_json
 
 logger = get_logger(__name__)
 
@@ -42,6 +44,130 @@ class Stage5Error(Exception):
 # ============================================================
 # 辅助函数
 # ============================================================
+async def _execute_diagnostic_queries(
+    conn: Any,
+    context: RequestContext,
+    sub_query_id: Optional[str],
+    diag_ctx: dict,
+    db_type: str
+) -> None:
+    """
+    执行诊断 SQL 查询，用于定位 SUM 返回 NULL 的根因
+    
+    Args:
+        conn: 数据库连接对象
+        context: 请求上下文
+        sub_query_id: 子查询 ID
+        diag_ctx: 诊断上下文（包含 view_name, time_field, time_start, time_end, tenant_field, tenant_id）
+        db_type: 数据库类型
+    """
+    view_name = diag_ctx.get("view_name")
+    if not view_name:
+        logger.warning("诊断上下文缺少 view_name，跳过诊断")
+        return
+    
+    time_field = diag_ctx.get("time_field")
+    time_start = diag_ctx.get("time_start")
+    time_end = diag_ctx.get("time_end")
+    tenant_field = diag_ctx.get("tenant_field", "tenant_id")
+    tenant_id = diag_ctx.get("tenant_id")
+    
+    # 根据数据库类型选择引号
+    quote_char = "`" if db_type.lower() == "mysql" else '"'
+    
+    # 构建诊断查询列表
+    diagnostic_queries = []
+    
+    # 1. 总行数
+    diagnostic_queries.append({
+        "label": "总行数",
+        "sql": f"SELECT COUNT(*) as cnt FROM {quote_char}{view_name}{quote_char}"
+    })
+    
+    # 2. 时间范围（如果有时间字段）
+    if time_field:
+        diagnostic_queries.append({
+            "label": "时间范围",
+            "sql": f"SELECT MIN({quote_char}{time_field}{quote_char}) as min_date, MAX({quote_char}{time_field}{quote_char}) as max_date FROM {quote_char}{view_name}{quote_char}"
+        })
+    
+    # 3. 时间过滤行数（如果有时间范围）
+    if time_field and time_start and time_end:
+        diagnostic_queries.append({
+            "label": "时间过滤行数",
+            "sql": f"SELECT COUNT(*) as cnt FROM {quote_char}{view_name}{quote_char} WHERE {quote_char}{time_field}{quote_char}>='{time_start}' AND {quote_char}{time_field}{quote_char}<='{time_end}'"
+        })
+    
+    # 4. 租户过滤行数（如果有租户 ID）
+    if tenant_id:
+        diagnostic_queries.append({
+            "label": "租户过滤行数",
+            "sql": f"SELECT COUNT(*) as cnt FROM {quote_char}{view_name}{quote_char} WHERE {quote_char}{tenant_field}{quote_char}='{tenant_id}'"
+        })
+        
+        # 5. 租户 NULL 行数
+        diagnostic_queries.append({
+            "label": "租户NULL行数",
+            "sql": f"SELECT COUNT(*) as cnt FROM {quote_char}{view_name}{quote_char} WHERE {quote_char}{tenant_field}{quote_char} IS NULL"
+        })
+    
+    # 6. 时间+租户组合过滤行数（如果两者都有）
+    if time_field and time_start and time_end and tenant_id:
+        diagnostic_queries.append({
+            "label": "时间+租户过滤行数",
+            "sql": f"SELECT COUNT(*) as cnt FROM {quote_char}{view_name}{quote_char} WHERE {quote_char}{time_field}{quote_char}>='{time_start}' AND {quote_char}{time_field}{quote_char}<='{time_end}' AND {quote_char}{tenant_field}{quote_char}='{tenant_id}'"
+        })
+    
+    # 7. 租户列检查（检查列是否存在）
+    if tenant_id:
+        diagnostic_queries.append({
+            "label": "租户列检查",
+            "sql": f"SELECT {quote_char}{tenant_field}{quote_char} FROM {quote_char}{view_name}{quote_char} LIMIT 1"
+        })
+    
+    # 执行所有诊断查询
+    for diag_query in diagnostic_queries:
+        try:
+            diag_result = await conn.execute(text(diag_query["sql"]))
+            diag_rows = diag_result.fetchall()
+            
+            # 转换为字典列表（兼容不同数据库返回格式）
+            diag_data = []
+            for row in diag_rows:
+                if hasattr(row, '_mapping'):
+                    diag_data.append(dict(row._mapping))
+                elif hasattr(row, '_asdict'):
+                    diag_data.append(row._asdict())
+                else:
+                    # 降级：尝试转换为列表
+                    diag_data.append(list(row))
+            
+            # 使用 preview_json 格式化输出（max_lines=40, max_chars=1200）
+            diag_preview = preview_json(diag_data, max_lines=40, max_chars=1200, label=diag_query["label"])
+            
+            logger.info(
+                f"【诊断SQL】{diag_query['label']}",
+                extra={
+                    "request_id": context.request_id,
+                    "sub_query_id": sub_query_id,
+                    "diagnostic_label": diag_query["label"],
+                    "diagnostic_sql": diag_query["sql"],
+                    "diagnostic_result": diag_preview
+                }
+            )
+        except Exception as e:
+            logger.warning(
+                f"诊断SQL执行失败: {diag_query['label']}",
+                extra={
+                    "request_id": context.request_id,
+                    "sub_query_id": sub_query_id,
+                    "diagnostic_label": diag_query["label"],
+                    "diagnostic_sql": diag_query["sql"],
+                    "error": str(e)
+                }
+            )
+
+
 def _sanitize_row(row: Any) -> List[Any]:
     """
     清理和规范化数据库行数据
@@ -132,7 +258,10 @@ def _sanitize_value(value: Any) -> Any:
 async def execute_sql(
     sql: str,
     context: RequestContext,
-    db_type: str
+    db_type: str,
+    *,
+    sub_query_id: Optional[str] = None,
+    diag_ctx: Optional[dict] = None
 ) -> ExecutionResult:
     """
     执行 SQL 查询并返回结构化结果
@@ -212,6 +341,29 @@ async def execute_sql(
                     )
                     # 继续执行，不中断流程
             
+            # ============================================================
+            # 诊断 SQL：证据性定位（仅在 SQL_DIAGNOSTICS=1 时执行）
+            # ============================================================
+            if os.getenv("SQL_DIAGNOSTICS") == "1" and diag_ctx:
+                try:
+                    await _execute_diagnostic_queries(
+                        conn=conn,
+                        context=context,
+                        sub_query_id=sub_query_id,
+                        diag_ctx=diag_ctx,
+                        db_type=db_type
+                    )
+                except Exception as e:
+                    # 诊断失败不影响主流程
+                    logger.warning(
+                        "诊断SQL执行异常（不影响主流程）",
+                        extra={
+                            "request_id": context.request_id,
+                            "sub_query_id": sub_query_id,
+                            "error": str(e)
+                        }
+                    )
+            
             # Query Execution: 执行主 SQL 查询
             logger.debug(
                 "Executing main SQL query",
@@ -272,6 +424,37 @@ async def execute_sql(
                     "latency_ms": latency_ms
                 }
             )
+            
+            # ============================================================
+            # 产出物日志：SQL 执行结果
+            # ============================================================
+            # 提取前5行数据（固定5行，避免日志过长）
+            rows_head_count = min(5, len(rows_sanitized))
+            rows_head = rows_sanitized[:rows_head_count] if rows_sanitized else []
+            
+            # 格式化输出
+            columns_str = str(columns) if columns else "[]"
+            rows_head_strs = []
+            for idx, row in enumerate(rows_head, 1):
+                # 将行转换为字符串，并使用 preview_text 做轻度截断（head=300）
+                row_str = str(row)
+                row_preview = preview_text(row_str, head=300, label=f"row_{idx}")
+                rows_head_strs.append(f"  {row_preview}")
+            
+            rows_head_output = "\n".join(rows_head_strs) if rows_head_strs else "  (no rows)"
+            
+            # 产出物日志：SQL执行结果（单条日志输出完整块）
+            sub_query_id_part = f" sub_query_id={sub_query_id}" if sub_query_id else ""
+            # 第一条：标签 + 元数据
+            logger.info(
+                f"【STAGE5关键产物：SQL执行结果】 request_id={context.request_id}{sub_query_id_part} row_count={row_count} is_truncated={is_truncated} latency_ms={latency_ms}"
+            )
+            # 第二条：columns
+            logger.info(
+                f"【STAGE5关键产物：SQL执行结果】 request_id={context.request_id}{sub_query_id_part} columns={columns_str}"
+            )
+            # 第三条：rows_head（单条日志输出完整块）
+            logger.info(f"【STAGE5关键产物：SQL执行结果】 request_id={context.request_id}{sub_query_id_part} rows_head:\n{rows_head_output}")
             
             # Step 4: Result Encapsulation
             return ExecutionResult.create_success(

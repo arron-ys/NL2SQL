@@ -4,6 +4,7 @@ Stage 3: Validation and Normalization (验证与规范化)
 对 Stage 2 生成的 QueryPlan 进行验证、规范化和安全检查。
 对应详细设计文档 3.3 的定义。
 """
+import json
 import time
 from typing import Dict, List, Optional, Set, Any
 
@@ -224,15 +225,18 @@ def _inject_time_window_if_needed(plan: QueryPlan, plan_dict: Dict[str, Any], re
     """
     步骤四 子步骤1：时间窗口补全 Time Window Injection（严格按最终设计 0~4）。
     """
-    # 0) 检查 time_range 字段是否存在于 Plan 中
-    # 关键修复：区分"字段存在且值为 None"（明确不要时间过滤）和"字段不存在"（需要补全）
-    if "time_range" in plan_dict:
-        # 字段存在，无论值是 None 还是具体的时间范围，都表示 Stage 2 已做出明确决策
-        # - 值为 None：用户明确不需要时间过滤（如"总体销售额"）
-        # - 值为非 None：用户已指定具体时间范围
-        # 两种情况都应跳过自动补全逻辑
+    # 0) 检查 time_range 字段是否已明确设置
+    # 关键修复：区分"字段存在且值为 None"（明确不要时间过滤）和"字段不存在或为 None"（需要补全）
+    # 如果 plan.time_range 不为 None，说明用户已指定，跳过补全
+    if plan.time_range is not None:
+        logger.debug(
+            "Time range already specified, skipping injection",
+            extra={"time_range": plan.time_range.model_dump() if hasattr(plan.time_range, "model_dump") else str(plan.time_range)}
+        )
         return
+    
     if not plan.metrics:
+        logger.debug("No metrics in plan, skipping time window injection")
         return
 
     # 3) 多指标冲突检测：仅当 metrics > 1 且用户未指定 time_range 时执行
@@ -267,7 +271,29 @@ def _inject_time_window_if_needed(plan: QueryPlan, plan_dict: Dict[str, Any], re
         # 无冲突：继续用主指标注入（但已确认与其他指标一致）
         primary_metric_id = plan.metrics[0].id
         primary = next(c for c in candidates if c["metric_id"] == primary_metric_id)
-        plan_dict["time_range"] = primary["time_range"].model_dump()
+        # primary["time_range"] 已经是 TimeRange 对象或 dict，需要转换为 dict
+        time_range_obj = primary["time_range"]
+        if hasattr(time_range_obj, "model_dump"):
+            plan_dict["time_range"] = time_range_obj.model_dump()
+        elif isinstance(time_range_obj, dict):
+            plan_dict["time_range"] = time_range_obj
+        else:
+            plan_dict["time_range"] = time_range_obj
+        
+        # 添加 DEBUG 日志，记录注入的时间窗口来源
+        logger.debug(
+            f"Injected time_range from {primary['level']} (multi-metric, no conflict)",
+            extra={
+                "metric_id": primary_metric_id,
+                "metric_name": primary["metric_name"],
+                "time_window_id": primary["time_window_id"],
+                "time_field_id": primary["time_field_id"],
+                "time_desc": primary["time_desc"],
+                "level": primary["level"],
+                "chosen_time_range": plan_dict["time_range"],
+                "all_metrics": [m.id for m in plan.metrics]
+            }
+        )
 
         # 4) warnings：仅当用户未指定时间而系统做了补全时追加
         if primary["level"] == "METRIC_DEFAULT":
@@ -283,7 +309,29 @@ def _inject_time_window_if_needed(plan: QueryPlan, plan_dict: Dict[str, Any], re
     # 单指标：按 Level1->Level2 解析并注入
     primary_metric_id = plan.metrics[0].id
     primary = _compute_metric_time_candidate(primary_metric_id, registry)
-    plan_dict["time_range"] = primary["time_range"].model_dump()
+    # primary["time_range"] 已经是 TimeRange 对象或 dict，需要转换为 dict
+    time_range_obj = primary["time_range"]
+    if hasattr(time_range_obj, "model_dump"):
+        plan_dict["time_range"] = time_range_obj.model_dump()
+    elif isinstance(time_range_obj, dict):
+        plan_dict["time_range"] = time_range_obj
+    else:
+        # 如果是 TimeRange 对象但没有 model_dump，尝试直接使用
+        plan_dict["time_range"] = time_range_obj
+    
+    # 添加 DEBUG 日志，记录注入的时间窗口来源
+    logger.debug(
+        f"Injected time_range from {primary['level']}",
+        extra={
+            "metric_id": primary_metric_id,
+            "metric_name": primary["metric_name"],
+            "time_window_id": primary["time_window_id"],
+            "time_field_id": primary["time_field_id"],
+            "time_desc": primary["time_desc"],
+            "level": primary["level"],
+            "chosen_time_range": plan_dict["time_range"]
+        }
+    )
 
     if primary["level"] == "METRIC_DEFAULT":
         plan_dict["warnings"].append(
@@ -332,7 +380,9 @@ def _extract_all_ids_from_plan(plan: QueryPlan) -> Set[str]:
 async def validate_and_normalize_plan(
     plan: QueryPlan,
     context: RequestContext,
-    registry: SemanticRegistry
+    registry: SemanticRegistry,
+    *,
+    sub_query_id: Optional[str] = None
 ) -> QueryPlan:
     """
     验证和规范化查询计划
@@ -441,7 +491,18 @@ async def validate_and_normalize_plan(
     plan_ids = _extract_all_ids_from_plan(plan)
     
     # 获取用户允许的 ID
-    allowed_ids = registry.get_allowed_ids(context.role_id)
+    allowed_ids_raw = registry.get_allowed_ids(context.role_id)
+    
+    # 强约束：get_allowed_ids 必须返回可迭代的 collection（set/list/tuple）
+    if not isinstance(allowed_ids_raw, (set, list, tuple)):
+        raise ConfigurationError(
+            f"registry.get_allowed_ids() must return a set/list/tuple of IDs, "
+            f"got {type(allowed_ids_raw).__name__}: {allowed_ids_raw}. "
+            f"This is likely a configuration or mock setup error."
+        )
+    
+    # 转换为 set 以便进行集合运算
+    allowed_ids = set(allowed_ids_raw) if not isinstance(allowed_ids_raw, set) else allowed_ids_raw
     
     # 检查是否有未授权的 ID
     unauthorized_ids = plan_ids - allowed_ids
@@ -599,6 +660,14 @@ async def validate_and_normalize_plan(
                 "validated_order_by": [{"id": o.id, "direction": o.direction.value} for o in validated_plan.order_by] if validated_plan.order_by else []
             }
         )
+        
+        # ============================================================
+        # 产出物日志：Validated Plan JSON（单条日志输出完整 JSON）
+        # ============================================================
+        validated_plan_dict = validated_plan.model_dump()
+        plan_json_str = json.dumps(validated_plan_dict, ensure_ascii=False, indent=2)
+        sub_query_id_part = f" sub_query_id={sub_query_id}" if sub_query_id else ""
+        logger.info(f"【STAGE3关键产物：PLAN_VALIDATED】 request_id={context.request_id}{sub_query_id_part} json=\n{plan_json_str}")
         
         return validated_plan
     

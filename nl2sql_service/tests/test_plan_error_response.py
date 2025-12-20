@@ -16,12 +16,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from freezegun import freeze_time
 
 from core.providers.jina_provider import JinaEmbeddingError
 from main import app
 
 
 @pytest.mark.integration
+@freeze_time("2024-01-15")
 def test_plan_error_response_contains_code_stage_request_id_and_is_sanitized():
     """
     【测试目标】

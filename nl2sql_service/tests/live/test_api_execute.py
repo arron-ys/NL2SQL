@@ -180,7 +180,6 @@ class TestHappyPath:
     """正向功能测试组（验证系统在正常输入下的完整功能）"""
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
     @pytest.mark.live
     @pytest.mark.slow
     @pytest.mark.skipif(
@@ -240,7 +239,6 @@ class TestHappyPath:
         assert isinstance(result["data_list"], list), "data_list should be a list"
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
     @pytest.mark.live
     @pytest.mark.slow
     @pytest.mark.skipif(
@@ -324,7 +322,6 @@ class TestNegativeBusiness:
     """反向业务测试组（验证系统对业务逻辑错误的优雅处理）"""
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
     @pytest.mark.live
     @pytest.mark.slow
     @pytest.mark.skipif(
@@ -387,7 +384,6 @@ class TestNegativeBusiness:
             )
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
     @pytest.mark.live
     @pytest.mark.slow
     @pytest.mark.skipif(
@@ -483,7 +479,6 @@ class TestDataBoundary:
     """数据边界测试组（验证系统对空数据的处理能力）"""
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
     @pytest.mark.live
     @pytest.mark.slow
     @pytest.mark.skipif(
@@ -567,7 +562,6 @@ class TestSchemaValidation:
     """接口契约测试组（验证 API 对格式错误的处理）"""
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
     @pytest.mark.live
     async def test_4_1_missing_required_field(self, async_client):
         """
@@ -611,7 +605,6 @@ class TestSchemaValidation:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
     @pytest.mark.live
     async def test_4_2_type_mismatch(self, async_client):
         """
@@ -670,7 +663,6 @@ class TestSecurityInjection:
     """安全防御测试组（验证系统对恶意输入的防护能力）"""
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
     @pytest.mark.live
     @pytest.mark.slow
     @pytest.mark.security

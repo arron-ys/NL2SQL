@@ -25,13 +25,14 @@ python-dotenv
 pyyaml
 loguru          # Structured Logging
 
-# Testing (测试框架)
+# Testing (Test Framework)
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
 pytest-mock>=3.10.0
-pytest-cov>=4.0.0      # 代码覆盖率（推荐）
+pytest-cov>=4.0.0      # Code coverage (recommended)
+freezegun>=1.2.0       # Time freezing (for test time isolation)
 
-# Development Tools (开发工具，可选)
-# black>=23.0.0        # 代码格式化
-# mypy>=1.0.0          # 类型检查
-# ruff>=0.1.0          # 快速 linting
+# Development Tools (Optional)
+# black>=23.0.0        # Code formatting
+# mypy>=1.0.0          # Type checking
+# ruff>=0.1.0          # Fast linting
