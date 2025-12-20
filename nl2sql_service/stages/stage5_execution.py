@@ -10,6 +10,7 @@ import time
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Any, List, Dict, Optional
+import json
 
 from sqlalchemy import text
 from sqlalchemy.exc import TimeoutError as SQLTimeoutError, ProgrammingError
@@ -426,35 +427,45 @@ async def execute_sql(
             )
             
             # ============================================================
-            # 产出物日志：SQL 执行结果
+            # 产出物日志：SQL 执行结果（人眼优先：单条日志输出“多行 JSON”）
             # ============================================================
-            # 提取前5行数据（固定5行，避免日志过长）
             rows_head_count = min(5, len(rows_sanitized))
             rows_head = rows_sanitized[:rows_head_count] if rows_sanitized else []
-            
-            # 格式化输出
-            columns_str = str(columns) if columns else "[]"
-            rows_head_strs = []
-            for idx, row in enumerate(rows_head, 1):
-                # 将行转换为字符串，并使用 preview_text 做轻度截断（head=300）
-                row_str = str(row)
-                row_preview = preview_text(row_str, head=300, label=f"row_{idx}")
-                rows_head_strs.append(f"  {row_preview}")
-            
-            rows_head_output = "\n".join(rows_head_strs) if rows_head_strs else "  (no rows)"
-            
-            # 产出物日志：SQL执行结果（单条日志输出完整块）
+
             sub_query_id_part = f" sub_query_id={sub_query_id}" if sub_query_id else ""
-            # 第一条：标签 + 元数据
-            logger.info(
-                f"【STAGE5关键产物：SQL执行结果】 request_id={context.request_id}{sub_query_id_part} row_count={row_count} is_truncated={is_truncated} latency_ms={latency_ms}"
+
+            result_payload = {
+                "sub_query_id": sub_query_id,
+                "row_count": row_count,
+                "column_count": len(columns),
+                "is_truncated": is_truncated,
+                "latency_ms": latency_ms,
+                "columns": columns,
+                "rows_head": rows_head,
+            }
+
+            # pretty JSON（多行、缩进、中文不转义）
+            result_json_pretty = json.dumps(
+                result_payload,
+                ensure_ascii=False,
+                indent=2,
+                default=str
             )
-            # 第二条：columns
+
+            # 防刷屏：按“行数”截断（更适合人眼），必要时再按“字符数”兜底
+            max_lines = 80
+            lines = result_json_pretty.splitlines()
+            if len(lines) > max_lines:
+                lines = lines[:max_lines] + ["  ...(truncated)"]
+                result_json_pretty = "\n".join(lines)
+
+            max_chars = 4000
+            if len(result_json_pretty) > max_chars:
+                result_json_pretty = result_json_pretty[:max_chars] + "\n...(truncated)"
+
             logger.info(
-                f"【STAGE5关键产物：SQL执行结果】 request_id={context.request_id}{sub_query_id_part} columns={columns_str}"
+                f"【STAGE5关键产物：SQL执行结果】 request_id={context.request_id}{sub_query_id_part}\n{result_json_pretty}"
             )
-            # 第三条：rows_head（单条日志输出完整块）
-            logger.info(f"【STAGE5关键产物：SQL执行结果】 request_id={context.request_id}{sub_query_id_part} rows_head:\n{rows_head_output}")
             
             # Step 4: Result Encapsulation
             return ExecutionResult.create_success(
