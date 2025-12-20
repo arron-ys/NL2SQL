@@ -1,12 +1,31 @@
 """
-Security Test Suite
+【简述】
+验证 NL2SQL 安全机制：权限绕过防护、SQL 注入过滤、租户隔离与超长输入攻击防御。
 
-测试安全相关功能：
-- 权限绕过：使用低权限role_id尝试访问高权限指标
-- SQL注入：在question中注入SQL片段
-- 数据泄露：验证tenant_id隔离是否生效
-- 超时攻击：发送超长question导致服务阻塞
+【范围/不测什么】
+- 不覆盖真实数据库执行；仅验证权限检查逻辑、输入过滤规则与租户隔离的正确性。
+
+【用例概述】
+- test_low_privilege_access_high_privilege_metric:
+  -- 验证低权限角色尝试访问高权限指标时被拒绝
+- test_unauthorized_role_access:
+  -- 验证未授权角色访问时返回权限错误
+- test_security_policy_not_found_mapped_to_403:
+  -- 验证安全策略未找到时映射为 403 错误
+- test_sql_injection_in_question:
+  -- 验证 question 中的 SQL 注入被过滤或转义
+- test_sql_injection_in_user_id:
+  -- 验证 user_id 中的 SQL 注入被参数化处理
+- test_tenant_id_isolation:
+  -- 验证 tenant_id 隔离机制生效
+- test_cross_tenant_data_access_prevention:
+  -- 验证跨租户数据访问被阻止
+- test_overlong_question_handling:
+  -- 验证超长 question 被拒绝或截断
+- test_extremely_long_question:
+  -- 验证极长 question（100KB）被拒绝
 """
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -65,7 +84,7 @@ def mock_registry():
 
 
 class TestPermissionBypass:
-    """测试权限绕过"""
+    """权限绕过测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.security
@@ -74,7 +93,22 @@ class TestPermissionBypass:
     async def test_low_privilege_access_high_privilege_metric(
         self, mock_process_subquery, mock_process_request, client, mock_registry
     ):
-        """测试低权限角色尝试访问高权限指标"""
+        """
+        【测试目标】
+        1. 验证低权限角色尝试访问高权限指标时被 Stage3 拒绝
+
+        【执行过程】
+        1. mock registry 配置权限规则（ROLE_LOW 只能访问 METRIC_BASIC）
+        2. mock Stage 1 返回 ROLE_LOW 的 request_context
+        3. mock Stage 2 返回包含高权限 METRIC_SENSITIVE 的 Plan（模拟 LLM 可能生成的错误 plan）
+        4. 调用 POST /nl2sql/plan
+        5. Stage 3 应检测到权限违规并抛出 PermissionDeniedError
+
+        【预期结果】
+        1. 返回 200 状态码（业务软错误）
+        2. status 为 "ERROR"
+        3. error.code 为 "PERMISSION_DENIED"
+        """
         import main
         from datetime import date
         from schemas.request import RequestContext, SubQueryItem
@@ -127,7 +161,22 @@ class TestPermissionBypass:
     async def test_unauthorized_role_access(
         self, mock_process_subquery, mock_process_request, client, mock_registry
     ):
-        """测试未授权角色访问"""
+        """
+        【测试目标】
+        1. 验证未授权角色（不存在于安全策略中）访问时返回权限错误
+
+        【执行过程】
+        1. mock registry 配置权限规则（ROLE_INVALID 不在策略中）
+        2. mock Stage 1 返回 ROLE_INVALID 的 request_context
+        3. mock Stage 2 返回包含任意指标的 Plan
+        4. 调用 POST /nl2sql/plan
+        5. Stage 3 权限检查应发现角色无效并拒绝
+
+        【预期结果】
+        1. 返回 200 状态码（业务软错误）
+        2. status 为 "ERROR"
+        3. error.code 为 "PERMISSION_DENIED"
+        """
         import main
         from datetime import date
         from schemas.request import RequestContext, SubQueryItem
@@ -183,7 +232,23 @@ class TestPermissionBypass:
         client,
         mock_registry,
     ):
-        """role_id 未配置 policy：应由全局异常处理器映射为 403（fail-closed）"""
+        """
+        【测试目标】
+        1. 验证安全策略未找到时映射为 403 错误（fail-closed 策略）
+
+        【执行过程】
+        1. mock registry
+        2. mock Stage 1 返回不存在的 ROLE_NOT_EXIST
+        3. mock Stage 2 抛出 SecurityPolicyNotFound 异常
+        4. 调用 POST /nl2sql/plan
+        5. 验证全局异常处理器正确映射为 403
+
+        【预期结果】
+        1. 返回 403 状态码
+        2. status 为 "error"
+        3. error.stage 为 "SECURITY"
+        4. error.code 为 "SECURITY_POLICY_NOT_FOUND"
+        """
         import main
         from datetime import date
 
@@ -224,14 +289,27 @@ class TestPermissionBypass:
 
 
 class TestSQLInjection:
-    """测试SQL注入防护"""
+    """SQL 注入防护测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.security
     async def test_sql_injection_in_question(
         self, client, mock_registry
     ):
-        """测试question中的SQL注入尝试"""
+        """
+        【测试目标】
+        1. 验证 question 中的 SQL 注入被过滤或转义
+
+        【执行过程】
+        1. mock registry
+        2. 准备多个 SQL 注入测试用例（DROP TABLE、OR '1'='1'、UNION SELECT 等）
+        3. 对每个注入尝试调用 POST /nl2sql/plan
+        4. 验证系统正常处理（不抛未捕获异常，且 question 被安全处理）
+
+        【预期结果】
+        1. 所有注入尝试都返回 200、400 或 500 状态码（不崩溃）
+        2. 系统将 SQL 关键字视为普通文本处理
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             sql_injection_attempts = [
@@ -269,7 +347,20 @@ class TestSQLInjection:
     async def test_sql_injection_in_user_id(
         self, mock_validate, mock_generate_plan, mock_decomposition, client, mock_registry
     ):
-        """测试user_id中的SQL注入尝试"""
+        """
+        【测试目标】
+        1. 验证 user_id 中的 SQL 注入被参数化处理，不导致崩溃
+
+        【执行过程】
+        1. mock registry 和 Stage 1-3
+        2. 在 user_id 字段中传入 SQL 注入字符串（如 "user'; DROP TABLE users; --"）
+        3. 调用 POST /nl2sql/plan
+        4. 验证系统正常处理（Pydantic 接受字符串，SQL 生成时应参数化）
+
+        【预期结果】
+        1. 返回 200 或 500 状态码（不崩溃）
+        2. 如果返回 500，响应包含结构化错误信息
+        """
         import main
         from datetime import date
         from schemas.request import RequestContext, SubQueryItem
@@ -330,14 +421,27 @@ class TestSQLInjection:
 
 
 class TestDataLeakage:
-    """测试数据泄露防护"""
+    """数据泄露防护测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.security
     async def test_tenant_id_isolation(
         self, client, mock_registry
     ):
-        """测试tenant_id隔离是否生效"""
+        """
+        【测试目标】
+        1. 验证 tenant_id 隔离机制生效（不同租户使用各自数据）
+
+        【执行过程】
+        1. mock registry
+        2. 使用 tenant_001 调用 POST /nl2sql/plan
+        3. 使用 tenant_002 调用 POST /nl2sql/plan（相同 question 和 user_id）
+        4. 验证两个请求都被独立处理
+
+        【预期结果】
+        1. 两个请求都返回 200 或 500 状态码（不崩溃）
+        2. tenant_id 被正确传递到 context（实际隔离在 SQL 执行阶段生效）
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             # 测试不同tenant_id的请求
@@ -372,7 +476,17 @@ class TestDataLeakage:
     async def test_cross_tenant_data_access_prevention(
         self, client, mock_registry
     ):
-        """测试跨租户数据访问防护"""
+        """
+        【测试目标】
+        1. 验证跨租户数据访问被阻止
+
+        【执行过程】
+        1. （占位测试，实际隔离在 SQL 执行阶段生效）
+        2. Plan 生成阶段主要验证 tenant_id 正确传递到 context
+
+        【预期结果】
+        1. （占位：SQL 执行时会添加 tenant_id 过滤条件）
+        """
         # 这个测试需要在SQL执行阶段验证
         # Plan生成阶段主要验证tenant_id被正确传递到context
         pass
@@ -384,14 +498,27 @@ class TestDataLeakage:
 
 
 class TestTimeoutAttack:
-    """测试超时攻击防护"""
+    """超时攻击防护测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.security
     async def test_overlong_question_handling(
         self, client, mock_registry
     ):
-        """测试超长question的处理"""
+        """
+        【测试目标】
+        1. 验证超长 question（5000字符）被拒绝或截断，不导致服务阻塞
+
+        【执行过程】
+        1. mock registry
+        2. 生成 5000 字符的 question
+        3. 调用 POST /nl2sql/plan
+        4. 验证响应状态码和测试不超时
+
+        【预期结果】
+        1. 返回 200、400、422 或 500 状态码（不阻塞）
+        2. 测试在合理时间内完成（不超时）
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             # 生成超长question（5000字符）
@@ -417,7 +544,19 @@ class TestTimeoutAttack:
     async def test_extremely_long_question(
         self, client, mock_registry
     ):
-        """测试极长question（10000字符）"""
+        """
+        【测试目标】
+        1. 验证极长 question（10000字符）被拒绝
+
+        【执行过程】
+        1. mock registry
+        2. 生成 10000 字符的 question
+        3. 调用 POST /nl2sql/plan
+        4. 验证响应状态码
+
+        【预期结果】
+        1. 返回 200、400、422 或 500 状态码（优雅处理，不崩溃）
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             extremely_long_question = "A" * 10000

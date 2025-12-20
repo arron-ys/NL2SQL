@@ -1,13 +1,19 @@
 """
-Live End-to-End Test Suite
+【简述】
+验证完整 NL2SQL 流水线的真实 E2E 执行：Stage 1 分解 → Stage 2-5 编排 → Stage 6 答案生成（调用真实外部服务）。
 
-测试完整的 NL2SQL 流水线（真实外部服务）：
-- Stage 1: Query Decomposition
-- Stage 2-5: Pipeline Orchestration
-- Stage 6: Answer Generation
+【范围/不测什么】
+- 不是 mock 测试；必须配置真实 API Key，否则跳过。
 
-需要真实的 API Key，如果 Key 不可用则跳过测试。
+【用例概述】
+- test_full_pipeline_execute:
+  -- 验证完整 /nl2sql/execute 流程正常执行并返回答案
+- test_full_pipeline_with_trace:
+  -- 验证 trace 模式返回完整执行追踪信息
+- test_plan_generation_live:
+  -- 验证 /nl2sql/plan 真实调用 LLM 生成 Plan
 """
+
 import os
 
 import pytest
@@ -102,7 +108,7 @@ _SKIP_LIVE_TESTS, _SKIP_REASON = _should_skip_live_tests()
 
 
 class TestE2ELive:
-    """测试端到端流程（真实外部服务）"""
+    """端到端流程测试组（真实外部服务）"""
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
@@ -113,7 +119,21 @@ class TestE2ELive:
         reason=_SKIP_REASON or "Live services not available"
     )
     async def test_full_pipeline_execute(self, client):
-        """测试完整的 /nl2sql/execute 流程"""
+        """
+        【测试目标】
+        1. 验证完整 /nl2sql/execute 流程正常执行并返回答案
+
+        【执行过程】
+        1. 调用 POST /nl2sql/execute 发送业务问题
+        2. 真实调用 LLM、Qdrant、数据库
+        3. 设置 60秒 timeout
+        4. 验证响应状态码和结构
+
+        【预期结果】
+        1. 返回 200 状态码
+        2. 响应包含 "answer_text" 或 "status" 字段
+        3. 如果有 answer_text，内容不为空
+        """
         
         # 发送完整的 NL2SQL 请求
         response = client.post(
@@ -148,7 +168,21 @@ class TestE2ELive:
         reason=_SKIP_REASON or "Live services not available"
     )
     async def test_full_pipeline_with_trace(self, client):
-        """测试完整的 /nl2sql/execute 流程（包含调试信息）"""
+        """
+        【测试目标】
+        1. 验证 trace 模式返回完整执行追踪信息
+
+        【执行过程】
+        1. 调用 POST /nl2sql/execute 设置 include_trace=True
+        2. 真实调用完整流程
+        3. 验证响应结构和调试信息完整性
+
+        【预期结果】
+        1. 返回 200 状态码
+        2. 响应包含 "answer" 和 "debug_info" 字段（嵌套结构）
+        3. 顶层不包含扁平的 answer_text、data_list、status（防止回归）
+        4. debug_info 包含 sub_queries、plans 字段
+        """
         
         # 发送完整的 NL2SQL 请求（包含调试信息）
         response = client.post(
@@ -198,7 +232,20 @@ class TestE2ELive:
         reason=_SKIP_REASON or "Live services not available"
     )
     async def test_plan_generation_live(self, client):
-        """测试 /nl2sql/plan 端点（真实 LLM）"""
+        """
+        【测试目标】
+        1. 验证 /nl2sql/plan 真实调用 LLM 生成 Plan
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送业务问题
+        2. 真实调用 LLM 和 Qdrant
+        3. 设置 30秒 timeout
+        4. 验证响应状态码和 Plan 结构
+
+        【预期结果】
+        1. 返回 200 状态码或业务软错误
+        2. 如果成功，响应包含 "intent" 字段
+        """
         
         # 发送 Plan 生成请求
         response = client.post(

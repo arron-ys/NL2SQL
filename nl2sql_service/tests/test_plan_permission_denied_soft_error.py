@@ -1,10 +1,13 @@
 """
-/nl2sql/plan permission denied soft error contract (integration).
+【简述】
+验证 /nl2sql/plan 遇到权限拒绝时返回 200 状态码并生成脱敏的 PERMISSION_DENIED 错误体，不泄露 METRIC_* 内部 ID。
 
-Requirements:
-- No real network calls.
-- Must return HTTP 200 with a sanitized PERMISSION_DENIED error body.
-- Must not leak specific METRIC_* IDs in response message/body.
+【范围/不测什么】
+- 不覆盖真实权限校验；仅验证权限错误的软降级响应结构与响应脱敏。
+
+【用例概述】
+- test_plan_permission_denied_returns_200_and_is_sanitized:
+  -- 验证权限拒绝时返回 200 且错误体不泄露 METRIC_* ID
 """
 
 import re
@@ -21,6 +24,22 @@ from schemas.plan import PlanIntent, QueryPlan
 
 @pytest.mark.integration
 def test_plan_permission_denied_returns_200_and_is_sanitized():
+    """
+    【测试目标】
+    1. 验证权限拒绝时 /nl2sql/plan 返回 200 且错误体不泄露 METRIC_* ID
+
+    【执行过程】
+    1. mock registry 和 stage1/stage2
+    2. mock stage3_validation 抛出 PermissionDeniedError 包含 METRIC_GMV
+    3. 调用 POST /nl2sql/plan
+    4. 验证响应状态、错误结构与 METRIC_* 泄露检查
+
+    【预期结果】
+    1. 返回 200 状态码
+    2. status 为 "ERROR"，error.code 为 "PERMISSION_DENIED"
+    3. error.message 包含 "没有权限"
+    4. 响应文本不包含 "METRIC_" 或 METRIC_* 格式的内部 ID
+    """
     client = TestClient(app)
 
     with patch("main.registry", new=MagicMock()):

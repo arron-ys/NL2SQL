@@ -1,11 +1,27 @@
 """
-Request ID Middleware and Logger Test Suite
+【简述】
+验证 Request ID Middleware 的 Trace-ID 读取、响应头回写与日志 contextvar 传递正确性。
 
-测试 Request ID Middleware 的正确性，包括：
-- Header 读取：Trace-ID > 自动生成
-- 响应头回写：无论成功还是 422，都要回写 Trace-ID
-- 日志链路：验证 contextvar 在日志中正确传递 request_id
+【范围/不测什么】
+- 不覆盖真实 API 业务逻辑；仅验证中间件的 ID 生成、响应头注入与日志链路传递。
+
+【用例概述】
+- test_generate_ids_when_no_headers:
+  -- 验证无 header 时自动生成 request_id 并回写到响应头
+- test_echo_trace_id:
+  -- 验证带 Trace-ID header 时响应头回写相同值
+- test_422_still_has_headers:
+  -- 验证 422 错误响应仍包含 Trace-ID
+- test_422_with_trace_id_header:
+  -- 验证 422 错误时回写用户提供的 Trace-ID
+- test_logger_captures_request_id_no_header:
+  -- 验证无 header 时日志捕获自动生成的 request_id
+- test_logger_captures_request_id_with_trace_id:
+  -- 验证带 Trace-ID header 时日志捕获正确的 request_id
+- test_logger_contextvar_persistence:
+  -- 验证同一请求上下文中多次日志调用都获取相同 request_id
 """
+
 import io
 
 import pytest
@@ -58,13 +74,20 @@ def log_capture():
 # 接口契约测试
 # ============================================================
 
+@pytest.mark.unit
 def test_generate_ids_when_no_headers(client):
     """
-    测试：不带 header 时，自动生成 request_id 并回写到响应头
-    
-    断言：
-    - response.headers 包含 Trace-ID
-    - 以 "req-" 开头
+    【测试目标】
+    1. 验证无 header 时自动生成 request_id 并回写到响应头
+
+    【执行过程】
+    1. 调用 GET / 不带任何 header
+    2. 检查响应头中的 Trace-ID
+
+    【预期结果】
+    1. 响应状态码为 200
+    2. 响应头包含 Trace-ID
+    3. Trace-ID 以 "req-" 开头
     """
     response = client.get("/")
     
@@ -78,12 +101,19 @@ def test_generate_ids_when_no_headers(client):
     assert trace_id.startswith("req-")
 
 
+@pytest.mark.unit
 def test_echo_trace_id(client):
     """
-    测试：带 Trace-ID header 时，回写相同的值
-    
-    断言：
-    - response.headers["Trace-ID"] == "trace-test-001"
+    【测试目标】
+    1. 验证带 Trace-ID header 时响应头回写相同值
+
+    【执行过程】
+    1. 调用 GET / 带 Trace-ID="trace-test-001"
+    2. 检查响应头中的 Trace-ID
+
+    【预期结果】
+    1. 响应状态码为 200
+    2. 响应头 Trace-ID 值为 "trace-test-001"
     """
     response = client.get(
         "/",
@@ -100,11 +130,20 @@ def test_echo_trace_id(client):
 
 
 
+@pytest.mark.unit
 def test_422_still_has_headers(client):
     """
-    测试：422 错误时，响应头仍然包含 Trace-ID
-    
-    发送一个无效的请求体，触发 422 验证错误。
+    【测试目标】
+    1. 验证 422 错误响应仍包含 Trace-ID
+
+    【执行过程】
+    1. 调用 POST /nl2sql/plan 发送空请求体
+    2. 触发 422 验证错误
+    3. 检查响应头
+
+    【预期结果】
+    1. 响应状态码为 422
+    2. 响应头包含 Trace-ID
     """
     # 发送空的请求体，触发 422
     response = client.post(
@@ -119,9 +158,20 @@ def test_422_still_has_headers(client):
     assert "Trace-ID" in response.headers
 
 
+@pytest.mark.unit
 def test_422_with_trace_id_header(client):
     """
-    测试：422 错误时，如果提供了 Trace-ID，应该回写相同的值
+    【测试目标】
+    1. 验证 422 错误时回写用户提供的 Trace-ID
+
+    【执行过程】
+    1. 调用 POST /nl2sql/plan 发送空请求体，带 Trace-ID="trace-422-test"
+    2. 触发 422 验证错误
+    3. 检查响应头
+
+    【预期结果】
+    1. 响应状态码为 422
+    2. 响应头 Trace-ID 值为 "trace-422-test"
     """
     response = client.post(
         "/nl2sql/plan",
@@ -139,13 +189,20 @@ def test_422_with_trace_id_header(client):
 # 日志链路测试
 # ============================================================
 
+@pytest.mark.integration
 def test_logger_captures_request_id_no_header(client, log_capture):
     """
-    测试：无 header 时，日志中能捕获到自动生成的 request_id
-    
-    1. 添加临时路由用于测试日志
-    2. 调用该路由
-    3. 断言捕获的日志包含 "[req-"
+    【测试目标】
+    1. 验证无 header 时日志捕获自动生成的 request_id
+
+    【执行过程】
+    1. 添加临时测试路由并调用 logger.info
+    2. 调用该路由不带 header
+    3. 检查捕获的日志内容
+
+    【预期结果】
+    1. 响应状态码为 200
+    2. 捕获的日志包含 "[req-" 前缀
     """
     # 添加临时测试路由
     @app.get("/__log_test")
@@ -175,13 +232,20 @@ def test_logger_captures_request_id_no_header(client, log_capture):
         pass
 
 
+@pytest.mark.integration
 def test_logger_captures_request_id_with_trace_id(client, log_capture):
     """
-    测试：带 Trace-ID header 时，日志中能捕获到正确的 request_id
-    
-    1. 添加临时路由用于测试日志
-    2. 调用该路由，带 Trace-ID header
-    3. 断言捕获的日志包含 "[trace-test-001]"
+    【测试目标】
+    1. 验证带 Trace-ID header 时日志捕获正确的 request_id
+
+    【执行过程】
+    1. 添加临时测试路由并调用 logger.info
+    2. 调用该路由带 Trace-ID="trace-test-001"
+    3. 检查捕获的日志内容
+
+    【预期结果】
+    1. 响应状态码为 200
+    2. 捕获的日志包含 "[trace-test-001]"
     """
     # 添加临时测试路由
     @app.get("/__log_test_trace")
@@ -209,11 +273,20 @@ def test_logger_captures_request_id_with_trace_id(client, log_capture):
         pass
 
 
+@pytest.mark.integration
 def test_logger_contextvar_persistence(client, log_capture):
     """
-    测试：在同一个请求上下文中，多次日志调用都能获取到相同的 request_id
-    
-    验证 contextvar 在异步环境中正确传递。
+    【测试目标】
+    1. 验证同一请求上下文中多次日志调用都获取相同 request_id
+
+    【执行过程】
+    1. 添加临时测试路由，内部调用 3 次 logger.info
+    2. 调用该路由带 Trace-ID="trace-multiple-test"
+    3. 检查捕获的日志内容
+
+    【预期结果】
+    1. 响应状态码为 200
+    2. 捕获的日志至少包含 3 条带相同 trace_id 的记录
     """
     # 添加临时测试路由，内部多次调用 logger
     @app.get("/__log_test_multiple")

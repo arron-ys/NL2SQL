@@ -1,12 +1,21 @@
 """
-Quality Evaluation Test Suite
+【简述】
+验证 NL2SQL Plan 生成的质量指标：意图识别准确率、多次调用一致性、语义匹配度与术语覆盖率。
 
-测试质量评测相关功能：
-- Plan正确性：Plan意图识别正确率 > 85%
-- 稳定性：相同问题3次调用，Plan结构一致性 > 90%
-- 可解释性：Plan中metrics/dimensions与问题语义匹配度
-- 覆盖率：覆盖YAML中定义的80%以上术语
+【范围/不测什么】
+- 不覆盖真实 AI 模型推理；仅基于 YAML 评测集验证 Plan 质量指标的计算与阈值检查。
+
+【用例概述】
+- test_intent_recognition_accuracy:
+  -- 验证意图识别正确率 > 85%
+- test_plan_consistency_multiple_calls:
+  -- 验证相同问题多次调用 Plan 结构一致性 > 90%
+- test_plan_metrics_match_question_semantics:
+  -- 验证 Plan 中 metrics/dimensions 与问题语义匹配度
+- test_yaml_term_coverage:
+  -- 验证覆盖 YAML 中定义的 80% 以上术语
 """
+
 import yaml
 from datetime import date
 from pathlib import Path
@@ -137,7 +146,7 @@ def normalize_dimensions(dimensions: Union[List[str], List[Dict[str, Any]], None
 
 
 class TestPlanCorrectness:
-    """测试Plan正确性"""
+    """Plan 正确性测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.quality
@@ -149,7 +158,19 @@ class TestPlanCorrectness:
         self, mock_validate, mock_generate_plan, mock_decomposition,
         client, evaluation_suite, mock_registry
     ):
-        """测试意图识别正确率 > 85%"""
+        """
+        【测试目标】
+        1. 验证意图识别正确率 > 85%
+
+        【执行过程】
+        1. 加载 evaluation/plan_quality_suite.yaml 评测集
+        2. 对每个用例 mock Stage 1-3 返回预期的 intent
+        3. 调用 POST /nl2sql/plan 并比较实际 intent 与预期
+        4. 统计正确率
+
+        【预期结果】
+        1. 正确识别的用例数 / 总用例数 > 85%
+        """
         import main
         from schemas.request import RequestContext, SubQueryItem
         from schemas.plan import QueryPlan, PlanIntent, MetricItem
@@ -223,7 +244,7 @@ class TestPlanCorrectness:
 
 
 class TestPlanStability:
-    """测试Plan稳定性"""
+    """Plan 稳定性测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.quality
@@ -231,7 +252,19 @@ class TestPlanStability:
     async def test_plan_consistency_multiple_calls(
         self, client, mock_registry
     ):
-        """测试相同问题3次调用，Plan结构一致性 > 90%"""
+        """
+        【测试目标】
+        1. 验证相同问题多次调用 Plan 结构一致性 > 90%
+
+        【执行过程】
+        1. mock registry
+        2. 对同一问题调用 3 次 POST /nl2sql/plan
+        3. 比较三次响应的 intent、metrics、dimensions 一致性
+        4. 计算一致性分数（三个维度的平均值）
+
+        【预期结果】
+        1. 一致性分数 > 90%
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             question = "统计每个部门的员工数量"
@@ -283,7 +316,7 @@ class TestPlanStability:
 
 
 class TestPlanExplainability:
-    """测试Plan可解释性"""
+    """Plan 可解释性测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.quality
@@ -294,7 +327,19 @@ class TestPlanExplainability:
         self, mock_validate, mock_generate_plan, mock_decomposition,
         client, mock_registry
     ):
-        """测试Plan中metrics与问题语义匹配"""
+        """
+        【测试目标】
+        1. 验证 Plan 中 metrics/dimensions 与问题语义匹配度
+
+        【执行过程】
+        1. mock registry 和 Stage 1-3
+        2. 准备多个测试用例（question + expected_metrics）
+        3. 对每个用例调用 POST /nl2sql/plan
+        4. 验证返回的 metrics 是否包含预期的指标
+
+        【预期结果】
+        1. 返回的 metrics 列表包含预期的指标 ID
+        """
         import main
         from datetime import date
         from schemas.request import RequestContext, SubQueryItem
@@ -367,7 +412,7 @@ class TestPlanExplainability:
 
 
 class TestTermCoverage:
-    """测试术语覆盖率"""
+    """术语覆盖率测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.quality
@@ -375,7 +420,19 @@ class TestTermCoverage:
     async def test_yaml_term_coverage(
         self, client, evaluation_suite, mock_registry
     ):
-        """测试覆盖YAML中定义的80%以上术语"""
+        """
+        【测试目标】
+        1. 验证覆盖 YAML 中定义的 80% 以上术语
+
+        【执行过程】
+        1. mock registry
+        2. 加载 evaluation/plan_quality_suite.yaml 评测集
+        3. 遍历所有用例，收集使用的术语（metrics、dimensions、filters 的 ID）
+        4. 计算覆盖率（简化处理，实际需要与 YAML 定义的全部术语比较）
+
+        【预期结果】
+        1. 术语覆盖率 > 80%
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             if not evaluation_suite:

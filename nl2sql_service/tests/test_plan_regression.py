@@ -1,9 +1,15 @@
 """
-Plan Regression Test Suite
+【简述】
+验证 NL2SQL Plan 生成的回归测试：基于 YAML 用例驱动，确保语义层变更不破坏已有功能。
 
-基于 YAML 用例的回归测试，验证语义层变更不会破坏已有功能。
-使用 FastAPI TestClient 调用 /nl2sql/plan 端点，mock 所有外部依赖。
+【范围/不测什么】
+- 不覆盖真实 AI 模型推理与语义层加载；仅验证 Plan 响应结构与关键字段（intent、metrics、dimensions、time_range）正确性。
+
+【用例概述】
+- test_regression_case:
+  -- 执行所有 YAML 回归用例并验证响应结构
 """
+
 import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Union
@@ -179,12 +185,20 @@ async def test_regression_case(
     regression_cases,
 ):
     """
-    执行所有回归测试用例
-    
-    对每个用例：
-    1. Mock Stage 1-3 的返回值
-    2. 调用 /nl2sql/plan 端点
-    3. 验证响应结构（intent、metrics、dimensions、time_range）
+    【测试目标】
+    1. 执行所有 YAML 回归用例并验证响应结构
+
+    【执行过程】
+    1. 加载 regression/plan_regression.yaml 用例
+    2. 对每个用例 mock Stage 1-3 返回值
+    3. 调用 POST /nl2sql/plan
+    4. 验证响应 intent、metrics、dimensions、time_range
+
+    【预期结果】
+    1. 所有用例返回 200 状态码
+    2. 响应 intent 与预期一致
+    3. 响应 metrics 和 dimensions 与预期一致
+    4. 响应 time_range（如有）与预期一致
     """
     # 设置全局 registry
     mock_registry_global = mock_registry

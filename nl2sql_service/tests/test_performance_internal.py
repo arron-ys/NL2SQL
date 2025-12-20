@@ -1,9 +1,21 @@
 """
-Internal Performance Test Suite (Mocked)
+【简述】
+验证 NL2SQL 应用逻辑层性能（路由、校验、序列化）在 mock 所有外部依赖时的延迟与并发表现。
 
-测试应用自身逻辑性能（路由、校验、序列化），不包含外部服务调用。
-所有外部依赖（OpenAI/Jina/网络/DB/Qdrant）都被 Mock 掉。
+【范围/不测什么】
+- 不覆盖真实外部服务调用；仅验证应用内部逻辑的性能表现与并发安全性。
+
+【用例概述】
+- test_single_request_latency_p95:
+  -- 验证单请求延迟 P95 < 200ms
+- test_concurrent_requests_success_rate:
+  -- 验证并发请求成功率 > 95%
+- test_concurrent_requests_no_crash:
+  -- 验证并发请求不崩溃
+- test_request_timeout_setting:
+  -- 验证请求超时设置生效
 """
+
 import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -105,14 +117,26 @@ def mock_ai_client():
 
 
 class TestLatency:
-    """测试请求延迟（仅应用逻辑，不含外部服务）"""
+    """请求延迟测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.performance
     async def test_single_request_latency_p95(
         self, client, mock_registry, mock_ai_client
     ):
-        """测试单请求延迟 P95 < 200ms（仅应用逻辑）"""
+        """
+        【测试目标】
+        1. 验证单请求延迟 P95 < 200ms
+
+        【执行过程】
+        1. mock 所有外部依赖
+        2. 预热：执行 3 次请求
+        3. 正式测量：执行 20 次请求并记录延迟
+        4. 计算 P95 延迟
+
+        【预期结果】
+        1. P95 延迟 < 200ms
+        """
         import main
         with patch.object(main, 'registry', mock_registry), \
              patch('stages.stage1_decomposition.get_ai_client', return_value=mock_ai_client), \
@@ -164,14 +188,26 @@ class TestLatency:
 
 
 class TestConcurrency:
-    """测试并发处理能力（仅应用逻辑）"""
+    """并发处理能力测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.performance
     async def test_concurrent_requests_success_rate(
         self, client, mock_registry, mock_ai_client
     ):
-        """测试10并发请求，成功率 > 95%"""
+        """
+        【测试目标】
+        1. 验证并发请求成功率 > 95%
+
+        【执行过程】
+        1. mock 所有外部依赖
+        2. 使用线程池执行 10 个并发请求
+        3. 统计成功响应（200）数量
+        4. 计算成功率
+
+        【预期结果】
+        1. 成功率 > 95%
+        """
         import main
         with patch.object(main, 'registry', mock_registry), \
              patch('stages.stage1_decomposition.get_ai_client', return_value=mock_ai_client), \
@@ -242,11 +278,16 @@ class TestConcurrency:
 
 
 class TestTimeout:
-    """测试超时处理（Mock 版）"""
+    """超时处理测试组"""
 
     @pytest.fixture
     def slow_mock_ai_client(self):
-        """创建模拟的 AIClient，模拟超时场景（延迟 31 秒）"""
+        """
+        创建模拟的 AIClient，模拟超时场景。
+        
+        generate_decomposition 立即返回（正常），
+        generate_plan 延迟 31 秒后返回，用于触发 30s 超时阈值。
+        """
         mock_client = MagicMock()
         
         # Mock generate_decomposition (Stage 1 使用) - 立即返回
@@ -286,7 +327,22 @@ class TestTimeout:
     async def test_request_timeout_setting(
         self, mock_registry, slow_mock_ai_client
     ):
-        """测试请求超时设置（30s）- Mock 版"""
+        """
+        【测试目标】
+        1. 验证请求超时设置（30秒）生效
+
+        【执行过程】
+        1. mock registry 和 slow_mock_ai_client（generate_plan 延迟 31秒）
+        2. 使用 httpx.AsyncClient 包装 FastAPI app
+        3. 使用 asyncio.wait_for 设置 30秒 timeout
+        4. 调用 POST /nl2sql/plan
+        5. 捕获超时异常并测量实际耗时
+
+        【预期结果】
+        1. 抛出 asyncio.TimeoutError 或 httpx 超时异常
+        2. 实际耗时在 29-35 秒范围内（约 30秒）
+        3. 异常类型或消息包含 "timeout" 关键字
+        """
         import main
         with patch.object(main, 'registry', mock_registry), \
              patch('stages.stage1_decomposition.get_ai_client', return_value=slow_mock_ai_client), \

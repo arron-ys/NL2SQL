@@ -84,7 +84,7 @@ async def healthcheck_loop():
     interval_sec = float(os.getenv("HEALTH_INTERVAL_SEC", "120"))
     
     logger.debug(
-        "Healthcheck loop started",
+        f"健康检查循环已启动 | 间隔: {interval_sec}s",
         extra={"interval_sec": interval_sec}
     )
     
@@ -100,8 +100,9 @@ async def healthcheck_loop():
                 failed_providers = [name for name, ok in results.items() if not ok]
                 
                 if failed_providers:
+                    failed_list = ', '.join(failed_providers)
                     logger.debug(
-                        "Healthcheck detected unhealthy providers",
+                        f"部分 Providers 连接异常: {failed_list}",
                         extra={
                             "failed_providers": failed_providers,
                             "results": results,
@@ -110,18 +111,18 @@ async def healthcheck_loop():
                     )
                 else:
                     logger.debug(
-                        "Healthcheck passed for all providers",
+                        "所有 Providers 连接正常",
                         extra={"results": results}
                     )
             
             except Exception as e:
                 logger.error(
-                    "Healthcheck loop error",
+                    "健康检查循环出错",
                     extra={"error": str(e)}
                 )
     
     except asyncio.CancelledError:
-        logger.debug("Healthcheck loop cancelled")
+        logger.debug("健康检查循环已取消")
         raise
 
 

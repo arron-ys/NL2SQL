@@ -1,12 +1,29 @@
 """
-Observability Test Suite
+【简述】
+验证 NL2SQL 可观测性功能：日志包含 request_id、响应头包含 Trace-ID、Stage 标识完整与错误日志结构化。
 
-测试可观测性相关功能：
-- 日志字段：所有日志包含request_id
-- Stage标识：每个Stage有明确的开始/结束日志
-- 错误日志：错误日志包含stage、code、message
-- 响应头：响应头包含Trace-ID
+【范围/不测什么】
+- 不覆盖真实 API 业务逻辑；仅验证日志格式、响应头注入与 Stage 标识的完整性。
+
+【用例概述】
+- test_response_headers_contain_trace_id:
+  -- 验证响应头包含 Trace-ID
+- test_error_response_headers_contain_trace_id:
+  -- 验证错误响应头也包含 Trace-ID
+- test_logs_contain_request_id:
+  -- 验证日志包含 request_id
+- test_stage_logging_contains_stage_info:
+  -- 验证 Stage 日志包含 stage 标识信息
+- test_error_response_structure:
+  -- 验证错误响应结构包含必需字段
+- test_error_logs_contain_stage_info:
+  -- 验证错误日志包含 stage、code、message
+- test_all_requests_have_trace_id:
+  -- 验证所有请求都有 trace_id
+- test_trace_id_consistency:
+  -- 验证 trace_id 在请求响应中保持一致
 """
+
 import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,10 +100,21 @@ def mock_registry():
 
 
 class TestLoggingFields:
-    """测试日志字段"""
+    """日志字段测试组"""
 
+    @pytest.mark.observability
     def test_response_headers_contain_trace_id(self, client):
-        """测试响应头包含Trace-ID"""
+        """
+        【测试目标】
+        1. 验证响应头包含 Trace-ID
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan
+        2. 检查响应头
+
+        【预期结果】
+        1. 响应头包含 Trace-ID 字段
+        """
         response = client.post(
             "/nl2sql/plan",
             json={
@@ -100,8 +128,19 @@ class TestLoggingFields:
         # 验证响应头包含追踪ID
         assert "Trace-ID" in response.headers
 
+    @pytest.mark.observability
     def test_error_response_headers_contain_trace_id(self, client):
-        """测试错误响应头也包含Trace-ID"""
+        """
+        【测试目标】
+        1. 验证错误响应头也包含 Trace-ID
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送无效请求
+        2. 检查错误响应头
+
+        【预期结果】
+        1. 响应头包含 Trace-ID 字段
+        """
         response = client.post(
             "/nl2sql/plan",
             json={},  # 无效请求
@@ -115,7 +154,20 @@ class TestLoggingFields:
     async def test_logs_contain_request_id(
         self, client, log_capture, mock_registry
     ):
-        """测试日志包含request_id"""
+        """
+        【测试目标】
+        1. 验证日志包含 request_id
+
+        【执行过程】
+        1. mock registry
+        2. 调用 POST /nl2sql/plan
+        3. 获取响应头中的 request_id
+        4. 检查日志内容
+
+        【预期结果】
+        1. 响应头包含 request_id
+        2. request_id 不为 None
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             # 发送请求
@@ -145,14 +197,26 @@ class TestLoggingFields:
 
 
 class TestStageLogging:
-    """测试Stage日志标识"""
+    """Stage 日志标识测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.observability
     async def test_stage_logging_contains_stage_info(
         self, client, log_capture, mock_registry
     ):
-        """测试Stage日志包含stage信息"""
+        """
+        【测试目标】
+        1. 验证 Stage 日志包含 stage 标识信息
+
+        【执行过程】
+        1. mock registry
+        2. 调用 POST /nl2sql/plan
+        3. 检查响应和日志
+
+        【预期结果】
+        1. 响应状态码为 200 或 500
+        2. 响应头包含 Trace-ID
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             # 发送请求
@@ -179,10 +243,22 @@ class TestStageLogging:
 
 
 class TestErrorLogging:
-    """测试错误日志"""
+    """错误日志测试组"""
 
+    @pytest.mark.observability
     def test_error_response_structure(self, client):
-        """测试错误响应结构"""
+        """
+        【测试目标】
+        1. 验证错误响应结构包含必需字段
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送无效请求
+        2. 检查响应结构
+
+        【预期结果】
+        1. 响应状态码为 422
+        2. 响应头包含 Trace-ID
+        """
         response = client.post(
             "/nl2sql/plan",
             json={},  # 无效请求
@@ -198,7 +274,18 @@ class TestErrorLogging:
     async def test_error_logs_contain_stage_info(
         self, client, mock_registry
     ):
-        """测试错误日志包含stage信息"""
+        """
+        【测试目标】
+        1. 验证错误日志包含 stage、code、message
+
+        【执行过程】
+        1. mock registry
+        2. 调用 POST /nl2sql/plan
+        3. 检查错误响应的追踪信息
+
+        【预期结果】
+        1. 错误响应包含 Trace-ID
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             # 发送可能出错的请求
@@ -224,10 +311,22 @@ class TestErrorLogging:
 
 
 class TestTraceability:
-    """测试可追踪性"""
+    """可追踪性测试组"""
 
+    @pytest.mark.observability
     def test_all_requests_have_trace_id(self, client):
-        """测试所有请求都有trace_id"""
+        """
+        【测试目标】
+        1. 验证所有请求都有 trace_id
+
+        【执行过程】
+        1. 准备有效和无效两种请求
+        2. 分别调用 POST /nl2sql/plan
+        3. 检查所有响应头
+
+        【预期结果】
+        1. 所有响应都包含 Trace-ID
+        """
         test_cases = [
             {
                 "question": "统计员工数量",
@@ -244,8 +343,20 @@ class TestTraceability:
             # 所有响应都应该包含追踪ID
             assert "Trace-ID" in response.headers
 
+    @pytest.mark.observability
     def test_trace_id_consistency(self, client):
-        """测试trace_id一致性（相同请求的trace_id应该一致）"""
+        """
+        【测试目标】
+        1. 验证 trace_id 在请求响应中保持一致
+
+        【执行过程】
+        1. 准备相同的请求数据
+        2. 两次调用 POST /nl2sql/plan 带相同的 Trace-ID
+        3. 检查两次响应头
+
+        【预期结果】
+        1. 两次响应头都回写相同的 trace_id
+        """
         request_data = {
             "question": "统计员工数量",
             "user_id": "user_001",

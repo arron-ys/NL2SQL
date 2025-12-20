@@ -111,7 +111,7 @@ class AIClient:
                 try:
                     results[provider_name] = await provider.healthcheck()
                 except Exception as e:
-                    logger.debug(f"Healthcheck failed for {provider_name}: {e}")
+                    logger.debug(f"{provider_name} 连接检查失败: {e}")
                     results[provider_name] = False
             else:
                 results[provider_name] = True  # 没有 healthcheck 方法则认为健康

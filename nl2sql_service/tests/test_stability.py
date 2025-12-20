@@ -1,10 +1,25 @@
 """
-Stability Test Suite
+【简述】
+验证 NL2SQL 在依赖失败场景下的稳定性：LLM 服务失败、Registry 未初始化、Stage 异常、连接失败、参数校验与无效数据的优雅降级。
 
-测试稳定性相关功能：
-- 异常降级：依赖失败时的优雅降级
-- 依赖失败：LLM服务失败、数据库连接失败等
+【范围/不测什么】
+- 不覆盖真实外部服务；仅验证异常处理路径、错误响应结构与服务不崩溃的韧性。
+
+【用例概述】
+- test_llm_service_failure_handling:
+  -- 验证 LLM 服务失败时返回结构化错误而非未处理异常
+- test_registry_not_initialized_handling:
+  -- 验证 Registry 未初始化时返回 500 错误
+- test_stage_failure_handling:
+  -- 验证 Stage 抛出异常时返回结构化错误
+- test_ai_client_connection_failure:
+  -- 验证 AI Client 连接失败时返回 500 错误
+- test_invalid_request_handling:
+  -- 验证无效请求参数时返回 422 错误
+- test_validation_failure_handling:
+  -- 验证 Stage3 校验失败时返回适当错误
 """
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,7 +45,7 @@ def client():
 
 
 class TestGracefulDegradation:
-    """测试优雅降级"""
+    """优雅降级测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.stability
@@ -42,7 +57,20 @@ class TestGracefulDegradation:
         mock_registry_global,
         client,
     ):
-        """测试LLM服务失败时的处理"""
+        """
+        【测试目标】
+        1. 验证 LLM 服务失败时返回结构化错误而非未处理异常
+
+        【执行过程】
+        1. mock registry
+        2. mock stage2_plan_generation 抛出 Exception（模拟 LLM 服务不可用）
+        3. 调用 POST /nl2sql/plan
+        4. 验证响应状态码和错误结构
+
+        【预期结果】
+        1. 返回 500 或 400 状态码（不是未捕获的 500 服务器崩溃）
+        2. 响应包含结构化错误：request_id、error.code、error.message
+        """
         # patch("main.registry") 已经把全局 registry 替换为一个 MagicMock（无需再次赋值）
         # Mock Stage2 抛出异常（模拟 LLM/Stage2 失败）
         mock_generate_plan.side_effect = Exception("LLM service unavailable")
@@ -70,7 +98,20 @@ class TestGracefulDegradation:
     async def test_registry_not_initialized_handling(
         self, client
     ):
-        """测试注册表未初始化时的处理"""
+        """
+        【测试目标】
+        1. 验证 Registry 未初始化时返回 500 错误
+
+        【执行过程】
+        1. mock main.registry 为 None（模拟启动失败场景）
+        2. 调用 POST /nl2sql/plan
+        3. 验证响应状态码和错误结构
+
+        【预期结果】
+        1. 返回 500 或 503 状态码
+        2. 响应包含 request_id 和 error 字段
+        3. error.code 为 "INTERNAL_ERROR" 或 "LLM_PROVIDER_INIT_FAILED"
+        """
         # 需要真的把 main.registry 置为 None（仅重绑入参不会影响 patch）
         import main
         with patch.object(main, "registry", None):
@@ -101,7 +142,21 @@ class TestGracefulDegradation:
         mock_registry_global,
         client,
     ):
-        """测试Stage失败时的处理"""
+        """
+        【测试目标】
+        1. 验证 Stage 抛出异常时返回结构化错误
+
+        【执行过程】
+        1. mock registry
+        2. mock stage1_decomposition 抛出 Exception
+        3. 调用 POST /nl2sql/plan
+        4. 验证响应状态码和错误结构
+
+        【预期结果】
+        1. 返回 500 或 400 状态码
+        2. 响应包含 request_id 和 error 字段
+        3. error 包含 code 字段
+        """
         # Mock Stage 1 抛出异常
         mock_decomposition.side_effect = Exception("Stage 1 processing failed")
 
@@ -129,7 +184,7 @@ class TestGracefulDegradation:
 
 
 class TestDependencyFailure:
-    """测试依赖失败处理"""
+    """依赖失败处理测试组"""
 
     @pytest.mark.asyncio
     @pytest.mark.stability
@@ -141,7 +196,19 @@ class TestDependencyFailure:
         mock_registry_global,
         client,
     ):
-        """测试AI客户端连接失败"""
+        """
+        【测试目标】
+        1. 验证 AI Client 连接失败时返回 500 错误
+
+        【执行过程】
+        1. mock registry
+        2. mock AI Client generate_plan 方法抛出 Exception（模拟连接超时）
+        3. 调用 POST /nl2sql/plan
+        4. 验证响应状态码
+
+        【预期结果】
+        1. 返回 500、400 或 503 状态码（优雅处理，不崩溃）
+        """
         mock_registry_global = MagicMock()
 
         # Mock AI客户端连接失败
@@ -170,7 +237,19 @@ class TestDependencyFailure:
     async def test_invalid_request_handling(
         self, mock_registry_global, client
     ):
-        """测试无效请求的处理"""
+        """
+        【测试目标】
+        1. 验证无效请求参数时返回 422 错误
+
+        【执行过程】
+        1. mock registry
+        2. 调用 POST /nl2sql/plan 发送缺少必需字段的请求
+        3. 验证响应状态码和错误结构
+
+        【预期结果】
+        1. 返回 422 状态码（参数校验失败）
+        2. 响应包含 "detail" 字段或错误信息
+        """
         mock_registry_global = MagicMock()
 
         # 发送无效请求
@@ -196,7 +275,18 @@ class TestDependencyFailure:
         mock_registry_global,
         client,
     ):
-        """测试验证失败时的处理"""
+        """
+        【测试目标】
+        1. 验证 Stage3 校验失败时返回适当错误
+
+        【执行过程】
+        1. mock registry
+        2. mock stage3_validation 抛出 PermissionDeniedError
+        3. （简化测试，实际需要完整 mock pipeline）
+
+        【预期结果】
+        1. 预期返回 200 状态码与 status="ERROR"（业务软错误）
+        """
         mock_registry_global = MagicMock()
 
         # Mock验证失败

@@ -645,7 +645,7 @@ class JinaProvider(BaseAIProvider):
             # 只要没抛异常就认为健康（即使返回 4xx/5xx）
             self.metrics.record_healthcheck(success=True)
             logger.debug(
-                "Jina healthcheck passed",
+                "jina 连接正常",
                 extra={
                     "status_code": response.status_code,
                     "metrics": self.metrics.to_dict(),
@@ -660,7 +660,7 @@ class JinaProvider(BaseAIProvider):
             self.metrics.record_healthcheck(success=False)
             
             logger.debug(
-                f"Jina healthcheck failed (connection error), will reset client",
+                "jina 连接异常，正在重置客户端",
                 extra={
                     "error": error_msg,
                     "error_type": error_type,
@@ -679,7 +679,7 @@ class JinaProvider(BaseAIProvider):
             self.metrics.record_healthcheck(success=False)
             
             logger.debug(
-                f"Jina healthcheck failed (unexpected error)",
+                "jina 连接异常（未预期错误）",
                 extra={
                     "error": error_msg,
                     "error_type": error_type,

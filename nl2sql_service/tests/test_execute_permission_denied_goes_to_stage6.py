@@ -1,10 +1,13 @@
 """
-/nl2sql/execute permission denied should be handled by Stage6 (integration).
+【简述】
+验证 /nl2sql/execute 在遇到 PERMISSION_DENIED 错误时降级到 Stage6 生成自然语言答案，并确保响应不泄露 METRIC_* 内部 ID。
 
-Goal:
-- When pipeline returns a PERMISSION_DENIED error, /nl2sql/execute should still return HTTP 200
-  and produce a natural language answer via Stage6 (LLM mocked).
-- Must not leak METRIC_* IDs in response.
+【范围/不测什么】
+- 不覆盖真实权限校验与 LLM 推理；仅验证错误降级路径、Stage6 调用与响应脱敏。
+
+【用例概述】
+- test_execute_permission_denied_is_answered_by_stage6_and_sanitized:
+  -- 验证权限拒绝时返回 200 且通过 Stage6 生成答案，不泄露 METRIC_* ID
 """
 
 import re
@@ -20,6 +23,23 @@ from schemas.result import ExecutionResult
 
 @pytest.mark.integration
 def test_execute_permission_denied_is_answered_by_stage6_and_sanitized():
+    """
+    【测试目标】
+    1. 验证权限拒绝时 /nl2sql/execute 降级到 Stage6 生成答案且不泄露 METRIC_* ID
+
+    【执行过程】
+    1. mock stage1 返回查询描述
+    2. mock run_pipeline 返回包含 PERMISSION_DENIED 错误的结果
+    3. mock Stage6 generate_answer 返回友好提示
+    4. 调用 POST /nl2sql/execute
+    5. 验证响应状态、答案内容与 METRIC_* 泄露检查
+
+    【预期结果】
+    1. 返回 200 状态码
+    2. status 为 "ALL_FAILED"
+    3. answer_text 包含 "没有相关权限"
+    4. 响应文本不包含 "METRIC_" 或 METRIC_* 格式的内部 ID
+    """
     client = TestClient(app)
 
     with patch("main.registry", new=MagicMock()):

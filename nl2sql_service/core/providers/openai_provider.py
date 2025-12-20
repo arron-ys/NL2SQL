@@ -377,7 +377,7 @@ class OpenAIProvider(BaseAIProvider):
             )
             self.metrics.record_healthcheck(success=True)
             logger.debug(
-                f"{self.provider_name} healthcheck passed",
+                f"{self.provider_name} 连接正常",
                 extra={
                     "status_code": response.status_code,
                     "metrics": self.metrics.to_dict(),
@@ -391,7 +391,7 @@ class OpenAIProvider(BaseAIProvider):
             self.metrics.record_healthcheck(success=False)
             
             logger.debug(
-                f"{self.provider_name} healthcheck failed",
+                f"{self.provider_name} 连接异常",
                 extra={
                     "error": error_msg,
                     "error_type": error_type,

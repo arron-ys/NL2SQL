@@ -1,13 +1,55 @@
 """
-Plan API Test Suite
+【简述】
+验证 /nl2sql/plan API 的请求参数校验、成功响应结构、错误契约与 Schema 合规性。
 
-使用 TestClient 覆盖主要 API 路径（成功/失败场景）。
-重点测试：
-- POST /nl2sql/plan 成功场景
-- POST /nl2sql/plan 失败场景（缺少字段、错误类型等）
-- Error Contract 验证
-- Plan 响应 Contract Test（Schema 验证）
+【范围/不测什么】
+- 不覆盖真实 AI 模型推理与语义层加载；仅验证 API 契约、参数校验、响应结构与错误处理的完整性。
+
+【用例概述】
+- test_plan_api_success_agg:
+  -- 验证 AGG 意图的正常 Plan 生成成功
+- test_plan_api_success_trend:
+  -- 验证 TREND 意图的正常 Plan 生成成功
+- test_plan_api_success_detail:
+  -- 验证 DETAIL 意图的正常 Plan 生成成功
+- test_plan_api_response_structure:
+  -- 验证 Plan 响应包含必需字段
+- test_plan_api_missing_question:
+  -- 验证缺少 question 字段时返回 422
+- test_plan_api_missing_user_id:
+  -- 验证缺少 user_id 字段时返回 422
+- test_plan_api_missing_role_id:
+  -- 验证缺少 role_id 字段时返回 422
+- test_plan_api_missing_tenant_id:
+  -- 验证缺少 tenant_id 字段时返回 422
+- test_plan_api_invalid_type_user_id:
+  -- 验证 user_id 类型错误时返回 422
+- test_plan_api_invalid_type_include_trace:
+  -- 验证 include_trace 类型错误时返回 422
+- test_plan_api_empty_question:
+  -- 验证空 question 字符串时返回 422
+- test_plan_api_empty_request:
+  -- 验证空请求体时返回 422
+- test_error_contract_structure:
+  -- 验证错误响应结构包含必需字段
+- test_error_contract_request_id:
+  -- 验证错误响应包含 request_id
+- test_error_contract_400_status:
+  -- 验证客户端错误返回 400 系列状态码
+- test_error_contract_500_status_stage2_error:
+  -- 验证 Stage2 错误返回 500 状态码与结构化错误体
+- test_error_contract_missing_metric_error:
+  -- 验证 MissingMetricError 返回 200 状态码与软错误结构
+- test_error_contract_permission_denied_error:
+  -- 验证 PermissionDeniedError 返回 200 状态码与脱敏错误消息
+- test_plan_response_matches_schema:
+  -- 验证 Plan 响应符合 QueryPlan Schema
+- test_plan_response_has_required_fields:
+  -- 验证 Plan 响应包含所有必需字段
+- test_plan_response_intent_enum:
+  -- 验证 Plan 响应的 intent 为有效枚举值
 """
+
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -86,8 +128,9 @@ def mock_ai_client():
 
 
 class TestPlanAPISuccess:
-    """测试 Plan API 成功场景"""
+    """Plan API 成功场景测试组"""
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
@@ -100,7 +143,20 @@ class TestPlanAPISuccess:
         client,
         mock_registry,
     ):
-        """测试正常 Plan 生成 - AGG Intent"""
+        """
+        【测试目标】
+        1. 验证 /nl2sql/plan 在 AGG 意图场景下正常生成 Plan
+
+        【执行过程】
+        1. mock registry 和 Stage 1-3 返回 AGG 类型的 Plan
+        2. 调用 POST /nl2sql/plan 发送有效请求
+        3. 验证响应状态码和结构
+
+        【预期结果】
+        1. 返回 200 状态码
+        2. 响应包含 "intent" 字段，值为 "AGG"
+        3. 响应包含 "metrics" 字段且不为空
+        """
         # 设置全局 registry
         import main
         with patch.object(main, 'registry', mock_registry):
@@ -149,6 +205,7 @@ class TestPlanAPISuccess:
             assert "metrics" in plan
             assert len(plan["metrics"]) > 0
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
@@ -161,7 +218,20 @@ class TestPlanAPISuccess:
         client,
         mock_registry,
     ):
-        """测试正常 Plan 生成 - TREND Intent"""
+        """
+        【测试目标】
+        1. 验证 /nl2sql/plan 在 TREND 意图场景下正常生成 Plan
+
+        【执行过程】
+        1. mock registry 和 Stage 1-3 返回 TREND 类型的 Plan（包含时间维度和时间范围）
+        2. 调用 POST /nl2sql/plan 发送趋势分析请求
+        3. 验证响应状态码和结构
+
+        【预期结果】
+        1. 返回 200 状态码
+        2. 响应包含 "intent" 字段，值为 "TREND"
+        3. 响应包含 "metrics" 和 "dimensions" 字段且不为空
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             mock_decomposition.return_value = MagicMock(
@@ -207,6 +277,7 @@ class TestPlanAPISuccess:
             assert plan["intent"] == "TREND"
             assert "time_range" in plan
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
@@ -219,7 +290,20 @@ class TestPlanAPISuccess:
         client,
         mock_registry,
     ):
-        """测试正常 Plan 生成 - DETAIL Intent"""
+        """
+        【测试目标】
+        1. 验证 /nl2sql/plan 在 DETAIL 意图场景下正常生成 Plan
+
+        【执行过程】
+        1. mock registry 和 Stage 1-3 返回 DETAIL 类型的 Plan（无 metrics，有 dimensions 和 limit）
+        2. 调用 POST /nl2sql/plan 发送明细查询请求
+        3. 验证响应状态码和结构
+
+        【预期结果】
+        1. 返回 200 状态码
+        2. 响应包含 "intent" 字段，值为 "DETAIL"
+        3. 响应包含 "limit" 字段
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             mock_decomposition.return_value = MagicMock(
@@ -263,12 +347,25 @@ class TestPlanAPISuccess:
             assert plan["intent"] == "DETAIL"
             assert "limit" in plan
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.registry")
     async def test_plan_api_response_structure(
         self, mock_registry_global, client, mock_registry
     ):
-        """测试 Plan 响应结构符合 Schema"""
+        """
+        【测试目标】
+        1. 验证 Plan 响应结构包含必需字段
+
+        【执行过程】
+        1. mock registry
+        2. 调用 POST /nl2sql/plan 发送简单请求
+        3. 验证响应字段存在性（简化测试，实际应完整 mock pipeline）
+
+        【预期结果】
+        1. 响应状态码为 200 或 500（取决于 mock 完整性）
+        2. 响应为 JSON 格式
+        """
         mock_registry_global = mock_registry
 
         # 由于需要完整的 pipeline，这里简化测试
@@ -299,10 +396,22 @@ class TestPlanAPISuccess:
 
 
 class TestPlanAPIFailure:
-    """测试 Plan API 失败场景"""
+    """Plan API 失败场景测试组"""
 
+    @pytest.mark.integration
     def test_plan_api_missing_question(self, client):
-        """测试缺少 question 字段"""
+        """
+        【测试目标】
+        1. 验证缺少 question 字段时返回 422 参数校验错误
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送缺少 question 的请求
+        2. 验证响应状态码和错误消息
+
+        【预期结果】
+        1. 返回 422 状态码
+        2. 错误信息包含 "question" 字段提示
+        """
         response = client.post(
             "/nl2sql/plan",
             json={
@@ -316,8 +425,20 @@ class TestPlanAPIFailure:
         error = response.json()
         assert "question" in str(error).lower()
 
+    @pytest.mark.integration
     def test_plan_api_missing_user_id(self, client):
-        """测试缺少 user_id 字段"""
+        """
+        【测试目标】
+        1. 验证缺少 user_id 字段时返回 422 参数校验错误
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送缺少 user_id 的请求
+        2. 验证响应状态码和错误消息
+
+        【预期结果】
+        1. 返回 422 状态码
+        2. 错误信息包含 "user_id" 字段提示
+        """
         response = client.post(
             "/nl2sql/plan",
             json={
@@ -331,8 +452,20 @@ class TestPlanAPIFailure:
         error = response.json()
         assert "user_id" in str(error).lower()
 
+    @pytest.mark.integration
     def test_plan_api_missing_role_id(self, client):
-        """测试缺少 role_id 字段"""
+        """
+        【测试目标】
+        1. 验证缺少 role_id 字段时返回 422 参数校验错误
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送缺少 role_id 的请求
+        2. 验证响应状态码和错误消息
+
+        【预期结果】
+        1. 返回 422 状态码
+        2. 错误信息包含 "role_id" 字段提示
+        """
         response = client.post(
             "/nl2sql/plan",
             json={
@@ -346,8 +479,20 @@ class TestPlanAPIFailure:
         error = response.json()
         assert "role_id" in str(error).lower()
 
+    @pytest.mark.integration
     def test_plan_api_missing_tenant_id(self, client):
-        """测试缺少 tenant_id 字段"""
+        """
+        【测试目标】
+        1. 验证缺少 tenant_id 字段时返回 422 参数校验错误
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送缺少 tenant_id 的请求
+        2. 验证响应状态码和错误消息
+
+        【预期结果】
+        1. 返回 422 状态码
+        2. 错误信息包含 "tenant_id" 字段提示
+        """
         response = client.post(
             "/nl2sql/plan",
             json={
@@ -361,8 +506,19 @@ class TestPlanAPIFailure:
         error = response.json()
         assert "tenant_id" in str(error).lower()
 
+    @pytest.mark.integration
     def test_plan_api_invalid_type_user_id(self, client):
-        """测试 user_id 类型错误（传数字）"""
+        """
+        【测试目标】
+        1. 验证 user_id 类型错误时返回 422 参数校验错误
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送 user_id 为数字（应为字符串）的请求
+        2. 验证响应状态码
+
+        【预期结果】
+        1. 返回 422 状态码（类型校验失败）
+        """
         response = client.post(
             "/nl2sql/plan",
             json={
@@ -375,8 +531,19 @@ class TestPlanAPIFailure:
 
         assert response.status_code == 422
 
+    @pytest.mark.integration
     def test_plan_api_invalid_type_include_trace(self, client):
-        """测试 include_trace 类型错误（传字符串）"""
+        """
+        【测试目标】
+        1. 验证 include_trace 类型错误时返回 422 参数校验错误
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送 include_trace 为字符串（应为布尔值）的请求
+        2. 验证响应状态码
+
+        【预期结果】
+        1. 返回 422 状态码（类型校验失败）
+        """
         response = client.post(
             "/nl2sql/plan",
             json={
@@ -390,8 +557,19 @@ class TestPlanAPIFailure:
 
         assert response.status_code == 422
 
+    @pytest.mark.integration
     def test_plan_api_empty_question(self, client):
-        """测试空 question"""
+        """
+        【测试目标】
+        1. 验证空 question 字符串时返回 422 参数校验错误
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送 question="" 的请求
+        2. 验证响应状态码（根据 min_length=1 约束）
+
+        【预期结果】
+        1. 返回 422 状态码（长度校验失败）
+        """
         response = client.post(
             "/nl2sql/plan",
             json={
@@ -405,8 +583,19 @@ class TestPlanAPIFailure:
         # 根据 min_length=1 的约束，应该返回 422
         assert response.status_code == 422
 
+    @pytest.mark.integration
     def test_plan_api_empty_request(self, client):
-        """测试空请求体"""
+        """
+        【测试目标】
+        1. 验证空请求体时返回 422 参数校验错误
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送空 JSON 对象
+        2. 验证响应状态码
+
+        【预期结果】
+        1. 返回 422 状态码（缺少必需字段）
+        """
         response = client.post("/nl2sql/plan", json={})
 
         assert response.status_code == 422
@@ -418,10 +607,22 @@ class TestPlanAPIFailure:
 
 
 class TestErrorContract:
-    """测试错误契约（Error Contract）"""
+    """错误契约测试组"""
 
+    @pytest.mark.integration
     def test_error_contract_structure(self, client):
-        """验证错误响应结构一致性"""
+        """
+        【测试目标】
+        1. 验证错误响应结构包含必需字段
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送空请求体触发 422 错误
+        2. 验证错误响应结构
+
+        【预期结果】
+        1. 返回 422 状态码
+        2. 响应为 JSON 格式且包含 "detail" 字段
+        """
         response = client.post("/nl2sql/plan", json={})  # 缺少必需字段
 
         assert response.status_code == 422
@@ -430,19 +631,44 @@ class TestErrorContract:
         # 验证错误结构包含 detail
         assert "detail" in error or "detail" in str(error)
 
+    @pytest.mark.integration
     def test_error_contract_request_id(self, client):
-        """验证错误响应包含 request_id（通过响应头）"""
+        """
+        【测试目标】
+        1. 验证错误响应包含 request_id
+
+        【执行过程】
+        1. 调用 POST /nl2sql/plan 发送空请求体触发错误
+        2. 检查响应头中的 Trace-ID
+
+        【预期结果】
+        1. 响应头包含 Trace-ID 字段
+        """
         response = client.post("/nl2sql/plan", json={})
 
         # 验证响应头包含 Trace-ID
         assert "Trace-ID" in response.headers
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
     async def test_error_contract_400_status(
         self, mock_decomposition, client, mock_registry
     ):
-        """测试 400 错误的结构（空子查询）"""
+        """
+        【测试目标】
+        1. 验证客户端错误（空子查询）返回 400 状态码
+
+        【执行过程】
+        1. mock registry 和 stage1_decomposition 返回空子查询列表
+        2. 调用 POST /nl2sql/plan
+        3. 验证响应状态码和错误消息
+
+        【预期结果】
+        1. 返回 400 状态码
+        2. 错误响应包含 "detail" 字段
+        3. 错误消息包含 "No sub-queries" 提示
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             # Mock Stage 1 返回空子查询
@@ -472,6 +698,7 @@ class TestErrorContract:
             assert "detail" in error
             assert "No sub-queries" in error["detail"]
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
@@ -482,7 +709,22 @@ class TestErrorContract:
         client,
         mock_registry,
     ):
-        """测试 500 错误的结构（Stage 2 错误）"""
+        """
+        【测试目标】
+        1. 验证 Stage2 错误返回 500 状态码与结构化错误体
+
+        【执行过程】
+        1. mock registry 和 stage1
+        2. mock stage2_plan_generation 抛出 Stage2Error
+        3. 调用 POST /nl2sql/plan
+        4. 验证响应状态码、错误结构和字段内容
+
+        【预期结果】
+        1. 返回 500 状态码
+        2. 响应包含 "request_id"、"error_stage"、"error.code" 字段
+        3. error_stage 为 "STAGE_2_PLAN_GENERATION"
+        4. error.code 为 "STAGE2_UNKNOWN_ERROR"
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             mock_decomposition.return_value = MagicMock(
@@ -523,6 +765,7 @@ class TestErrorContract:
             assert "details" in error["error"]
             assert error["error"]["details"]["error_type"] in {"Stage2Error", "Stage2Error"}
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
@@ -535,7 +778,22 @@ class TestErrorContract:
         client,
         mock_registry,
     ):
-        """测试 MissingMetricError 走业务软错误（HTTP 200）"""
+        """
+        【测试目标】
+        1. 验证 MissingMetricError 返回 200 状态码与软错误结构
+
+        【执行过程】
+        1. mock registry 和 stage1/stage2
+        2. mock stage3_validation 抛出 MissingMetricError
+        3. 调用 POST /nl2sql/plan
+        4. 验证响应状态码和错误结构
+
+        【预期结果】
+        1. 返回 200 状态码（业务软错误）
+        2. status 为 "ERROR"
+        3. error.code 为 "NEED_CLARIFICATION"
+        4. error.stage 为 "STAGE_3_VALIDATION"
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             mock_decomposition.return_value = MagicMock(
@@ -576,6 +834,7 @@ class TestErrorContract:
             assert body["error"]["code"] == "NEED_CLARIFICATION"
             assert body["error"]["stage"] == "STAGE_3_VALIDATION"
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
@@ -588,7 +847,22 @@ class TestErrorContract:
         client,
         mock_registry,
     ):
-        """测试 PermissionDeniedError 走业务软错误（HTTP 200）"""
+        """
+        【测试目标】
+        1. 验证 PermissionDeniedError 返回 200 状态码与脱敏错误消息
+
+        【执行过程】
+        1. mock registry 和 stage1/stage2
+        2. mock stage3_validation 抛出 PermissionDeniedError（包含 METRIC_* ID）
+        3. 调用 POST /nl2sql/plan
+        4. 验证响应状态码、错误结构和 METRIC_* 脱敏
+
+        【预期结果】
+        1. 返回 200 状态码（业务软错误）
+        2. status 为 "ERROR"
+        3. error.code 为 "PERMISSION_DENIED"
+        4. 响应文本不包含 "METRIC_" 或 METRIC_* 格式的内部 ID
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             mock_decomposition.return_value = MagicMock(
@@ -636,14 +910,28 @@ class TestErrorContract:
 
 
 class TestPlanResponseContract:
-    """测试 Plan 响应契约（Contract Test）"""
+    """Plan 响应契约测试组"""
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.registry")
     async def test_plan_response_matches_schema(
         self, mock_registry_global, client, mock_registry
     ):
-        """测试 Plan 响应必须能被 schema 反序列化"""
+        """
+        【测试目标】
+        1. 验证 Plan 响应符合 QueryPlan Schema
+
+        【执行过程】
+        1. mock registry
+        2. 调用 POST /nl2sql/plan（简化测试）
+        3. 尝试使用 QueryPlan.model_validate() 反序列化响应
+        4. 验证 intent 字段类型
+
+        【预期结果】
+        1. 如果返回 200，响应可被 QueryPlan 成功反序列化
+        2. plan.intent 为有效的 PlanIntent 枚举值
+        """
         mock_registry_global = mock_registry
 
         # 由于需要完整的 pipeline，这里简化测试
@@ -669,6 +957,7 @@ class TestPlanResponseContract:
             except Exception as e:
                 pytest.fail(f"Plan response validation failed: {e}")
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
@@ -681,7 +970,19 @@ class TestPlanResponseContract:
         client,
         mock_registry,
     ):
-        """测试 Plan 响应包含必需字段"""
+        """
+        【测试目标】
+        1. 验证 Plan 响应包含所有必需字段
+
+        【执行过程】
+        1. mock registry 和 Stage 1-3 返回完整的 Plan
+        2. 调用 POST /nl2sql/plan
+        3. 验证响应中所有必需字段存在性
+
+        【预期结果】
+        1. 返回 200 状态码
+        2. 响应包含 "intent"、"metrics"、"dimensions"、"filters"、"order_by"、"warnings" 字段
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             mock_decomposition.return_value = MagicMock(
@@ -735,6 +1036,7 @@ class TestPlanResponseContract:
             assert "order_by" in plan
             assert "warnings" in plan
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     @patch("main.stage1_decomposition.process_request")
     @patch("main.stage2_plan_generation.process_subquery")
@@ -747,7 +1049,20 @@ class TestPlanResponseContract:
         client,
         mock_registry,
     ):
-        """测试 Plan 响应的 intent 必须是有效枚举值"""
+        """
+        【测试目标】
+        1. 验证 Plan 响应的 intent 为有效枚举值
+
+        【执行过程】
+        1. mock registry 和 Stage 1-3
+        2. 对所有三种 intent（AGG、TREND、DETAIL）分别执行测试
+        3. 调用 POST /nl2sql/plan
+        4. 验证响应中的 intent 值
+
+        【预期结果】
+        1. 返回 200 状态码
+        2. plan["intent"] 在 ["AGG", "TREND", "DETAIL"] 枚举值中
+        """
         import main
         with patch.object(main, 'registry', mock_registry):
             mock_decomposition.return_value = MagicMock(

@@ -1,9 +1,21 @@
 """
-Live Performance Test Suite
+【简述】
+验证真实外部服务（LLM/Jina）调用的性能指标：单请求延迟、P95 延迟、并发成功率与并发稳定性。
 
-测试真实外部服务（OpenAI/Jina）的性能指标。
-需要真实的 API Key，如果 Key 不可用则跳过测试。
+【范围/不测什么】
+- 不是 mock 测试；必须配置真实 API Key，否则跳过。性能阈值基于真实网络延迟。
+
+【用例概述】
+- test_single_request_latency_p50:
+  -- 验证单请求延迟 P50 < 3秒
+- test_single_request_latency_p95:
+  -- 验证单请求延迟 P95 < 5秒
+- test_concurrent_requests_success_rate:
+  -- 验证 5 并发请求成功率 > 80%
+- test_concurrent_requests_no_crash:
+  -- 验证并发请求不崩溃
 """
+
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -100,7 +112,7 @@ _SKIP_LIVE_TESTS, _SKIP_REASON = _should_skip_live_tests()
 
 
 class TestLatency:
-    """测试请求延迟（真实外部服务）"""
+    """请求延迟测试组（真实外部服务）"""
 
     @pytest.mark.asyncio
     @pytest.mark.performance
@@ -111,7 +123,18 @@ class TestLatency:
         reason=_SKIP_REASON or "Live services not available"
     )
     async def test_single_request_latency_p50(self, client):
-        """测试单请求延迟 P50 < 2s（真实 LLM）"""
+        """
+        【测试目标】
+        1. 验证单请求延迟 P50 < 3秒（真实 LLM 调用）
+
+        【执行过程】
+        1. 执行 10 次 POST /nl2sql/plan 请求
+        2. 测量每次请求的延迟
+        3. 计算 P50 延迟
+
+        【预期结果】
+        1. P50 延迟 < 3秒
+        """
         
         latencies = []
         num_requests = 10
@@ -196,7 +219,7 @@ class TestLatency:
 
 
 class TestConcurrency:
-    """测试并发处理能力（真实外部服务）"""
+    """并发处理能力测试组（真实外部服务）"""
 
     @pytest.mark.asyncio
     @pytest.mark.performance
@@ -207,7 +230,18 @@ class TestConcurrency:
         reason=_SKIP_REASON or "Live services not available"
     )
     async def test_concurrent_requests_success_rate(self, client):
-        """测试10并发请求，成功率 > 95%"""
+        """
+        【测试目标】
+        1. 验证 5 并发请求成功率 > 80%（真实 LLM 调用）
+
+        【执行过程】
+        1. 使用线程池执行 10 个并发 POST /nl2sql/plan 请求
+        2. 统计返回 200 状态码的请求数量
+        3. 计算成功率
+
+        【预期结果】
+        1. 成功率 > 95%
+        """
         
         num_concurrent = 10
         request_data = {
@@ -242,7 +276,19 @@ class TestConcurrency:
         reason=_SKIP_REASON or "Live services not available"
     )
     async def test_concurrent_requests_no_crash(self, client):
-        """测试并发请求不会导致服务崩溃"""
+        """
+        【测试目标】
+        1. 验证并发请求不崩溃（真实 LLM 调用）
+
+        【执行过程】
+        1. 使用线程池执行 10 个并发请求
+        2. 捕获所有异常
+        3. 统计连接错误数量
+
+        【预期结果】
+        1. 所有请求都有响应（不抛连接错误）
+        2. 错误数量为 0
+        """
         
         num_concurrent = 10
         request_data = {

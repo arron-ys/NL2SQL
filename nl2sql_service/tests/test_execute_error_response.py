@@ -1,12 +1,13 @@
 """
-/nl2sql/execute error response contract tests.
+【简述】
+验证 /nl2sql/execute 错误响应的结构契约：包含 request_id、error_stage、error.code，并确保敏感信息（API key）被脱敏。
 
-Same structured error response as /nl2sql/plan:
-{
-  "request_id": "...",
-  "error_stage": "...",
-  "error": {"code": "...", "message": "...", "details": {...?}}
-}
+【范围/不测什么】
+- 不覆盖真实数据库连接与 embedding 服务；仅验证错误响应结构与日志脱敏规则。
+
+【用例概述】
+- test_execute_error_response_contains_code_stage_request_id_and_is_sanitized:
+  -- 验证 execute 端点错误响应包含必需字段且敏感信息被脱敏
 """
 
 import re
@@ -22,6 +23,22 @@ from main import app
 
 @pytest.mark.integration
 def test_execute_error_response_contains_code_stage_request_id_and_is_sanitized():
+    """
+    【测试目标】
+    1. 验证 /nl2sql/execute 错误响应包含必需字段且敏感信息被脱敏
+
+    【执行过程】
+    1. mock registry 和 stage1_decomposition
+    2. mock run_pipeline 抛出 JinaEmbeddingError
+    3. 调用 POST /nl2sql/execute
+    4. 验证响应状态码、字段结构与敏感信息过滤
+
+    【预期结果】
+    1. 返回 500 状态码
+    2. 响应包含 request_id、error_stage="STAGE_2_PLAN_GENERATION"、error.code="EMBEDDING_UNAVAILABLE"
+    3. 响应文本不包含 api_key、authorization、bearer 等敏感关键字
+    4. 响应文本不包含 sk-xxx 格式的 API key 模式
+    """
     client = TestClient(app)
 
     with patch("main.registry", new=MagicMock()):

@@ -1,9 +1,15 @@
 """
-Jina Proxy & Stage2 Vector Required Test Suite
+【简述】
+验证 JinaProvider 代理模式配置规则与 Stage2 向量检索故障的严格失败机制。
 
-覆盖：
-1) PROXY_MODE=explicit 时，JinaProvider 默认 trust_env=False（不读取 HTTP_PROXY/HTTPS_PROXY）
-2) Stage2 向量检索 REQUIRED：embedding/向量检索失败必须严格失败，并携带明确 error_code/message
+【范围/不测什么】
+- 不覆盖真实 Jina API 调用；仅验证代理配置逻辑与向量检索失败时的异常传播。
+
+【用例概述】
+- test_jina_provider_explicit_mode_does_not_use_system_env_proxy:
+  -- 验证 PROXY_MODE=explicit 时 JinaProvider 强制 trust_env=False
+- test_stage2_vector_search_failure_is_strict_and_has_error_code:
+  -- 验证 Stage2 向量检索失败时严格抛出异常且包含稳定 error_code
 """
 
 from datetime import date
@@ -15,10 +21,22 @@ from core.providers.jina_provider import JinaProvider, JinaEmbeddingError
 from schemas.request import RequestContext, SubQueryItem
 
 
+@pytest.mark.unit
 def test_jina_provider_explicit_mode_does_not_use_system_env_proxy(monkeypatch):
     """
-    monkeypatch 设置 HTTP_PROXY/HTTPS_PROXY=127.0.0.1:7897，同时 PROXY_MODE=explicit 且 JINA_PROXY 为空：
-    断言 JinaProvider 创建 httpx.AsyncClient 时 trust_env=False（不会读系统 env 代理）。
+    【测试目标】
+    1. 验证 PROXY_MODE=explicit 且 JINA_PROXY 为空时 JinaProvider 强制 trust_env=False
+
+    【执行过程】
+    1. 设置 HTTP_PROXY 和 HTTPS_PROXY 系统环境变量
+    2. 设置 PROXY_MODE=explicit, PROXY_STRICT=0
+    3. 删除 JINA_PROXY 环境变量
+    4. spy httpx.AsyncClient.__init__ 捕获初始化参数
+    5. 初始化 JinaProvider
+
+    【预期结果】
+    1. trust_env 为 False
+    2. kwargs 中不包含 proxy 参数
     """
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7897")
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
@@ -43,11 +61,23 @@ def test_jina_provider_explicit_mode_does_not_use_system_env_proxy(monkeypatch):
     assert "proxy" not in captured["kwargs"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_stage2_vector_search_failure_is_strict_and_has_error_code():
     """
-    向量检索 REQUIRED：embedding/向量检索失败必须直接失败（不允许降级继续生成 Plan）。
-    断言抛出的异常具备稳定 code，且 message 含原始异常摘要。
+    【测试目标】
+    1. 验证 Stage2 向量检索失败时严格抛出异常且包含稳定 error_code
+
+    【执行过程】
+    1. 准备 SubQueryItem 和 RequestContext
+    2. mock registry 关键词索引可匹配但向量检索抛出 JinaEmbeddingError
+    3. 调用 process_subquery
+    4. 捕获 VectorSearchFailed 异常并检查属性
+
+    【预期结果】
+    1. 抛出 VectorSearchFailed 异常
+    2. 异常 code 为 "EMBEDDING_UNAVAILABLE"
+    3. 异常消息包含原始错误 "All connection attempts failed"
     """
     from stages.stage2_plan_generation import process_subquery, VectorSearchFailed
 

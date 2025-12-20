@@ -1,15 +1,19 @@
 """
-Database Connection Test Suite
+【简述】
+验证数据库连接正常性：连接字符串构建、引擎初始化、实际连接测试与版本查询（需要真实数据库配置）。
 
-测试数据库连接是否正常，包括：
-- 连接字符串构建
-- 数据库引擎初始化
-- 实际连接测试（执行简单查询）
+【范围/不测什么】
+- 不是 mock 测试；必须配置真实数据库连接，否则跳过。
 
-需要真实的数据库配置（从 .env 文件读取），如果配置不可用则跳过测试。
-
-注意：.env 文件由 tests/conftest.py 统一管理，在运行 live 测试时会自动加载。
+【用例概述】
+- test_database_connection:
+  -- 验证能够成功初始化引擎、建立连接并执行简单查询
+- test_database_connection_with_get_db_session:
+  -- 验证通过 get_db_session 创建会话并查询数据
+- test_database_version:
+  -- 验证能够查询数据库版本信息
 """
+
 import os
 
 import pytest
@@ -91,12 +95,18 @@ async def db_engine():
 )
 async def test_database_connection(db_engine: AsyncEngine):
     """
-    测试数据库连接是否正常
-    
-    验证：
-    1. 能够成功初始化数据库引擎
-    2. 能够建立实际连接
-    3. 能够执行简单查询
+    【测试目标】
+    1. 验证能够成功初始化数据库引擎、建立连接并执行简单查询
+
+    【执行过程】
+    1. 使用 db_engine fixture 获取引擎
+    2. 通过 engine.connect() 建立连接
+    3. 执行 SELECT 1 测试查询
+    4. 验证查询结果
+
+    【预期结果】
+    1. 连接成功建立
+    2. SELECT 1 返回结果为 [(1,)]
     """
     config = get_pipeline_config()
     db_type = config.db_type
@@ -138,12 +148,19 @@ async def test_database_connection(db_engine: AsyncEngine):
 )
 async def test_database_connection_with_get_db_session(db_engine: AsyncEngine):
     """
-    测试使用 get_db_session() 辅助函数进行数据库连接
-    
-    验证 get_db_session() 函数能够正常工作。
-    
-    注意：虽然这个测试主要验证 get_db_session()，但我们仍然需要 db_engine fixture
-    来确保测试后的清理和单例重置。
+    【测试目标】
+    1. 验证通过 get_db_session 创建会话并查询数据
+
+    【执行过程】
+    1. 使用 get_db_session() 异步上下文管理器获取会话
+    2. 根据数据库类型执行 SELECT DATABASE() 或 current_database() 查询
+    3. 验证返回的数据库名称与配置一致
+    4. db_engine fixture 确保测试后清理和单例重置
+
+    【预期结果】
+    1. 会话创建成功
+    2. 查询返回当前数据库名称
+    3. 数据库名称与配置的 DB_NAME 一致
     """
     config = get_pipeline_config()
     db_type = config.db_type
@@ -181,9 +198,17 @@ async def test_database_connection_with_get_db_session(db_engine: AsyncEngine):
 )
 async def test_database_version(db_engine: AsyncEngine):
     """
-    测试获取数据库版本信息
-    
-    验证能够成功查询数据库版本，确认连接正常且数据库可访问。
+    【测试目标】
+    1. 验证能够查询数据库版本信息
+
+    【执行过程】
+    1. 使用 db_engine 创建会话
+    2. 根据数据库类型执行 SELECT VERSION() 或 version() 查询
+    3. 验证返回的版本字符串不为空
+
+    【预期结果】
+    1. 版本查询成功
+    2. 版本字符串不为空且长度 > 0
     """
     config = get_pipeline_config()
     db_type = config.db_type
