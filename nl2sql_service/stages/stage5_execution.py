@@ -13,7 +13,7 @@ from typing import Any, List, Dict, Optional
 import json
 
 from sqlalchemy import text
-from sqlalchemy.exc import TimeoutError as SQLTimeoutError, ProgrammingError
+from sqlalchemy.exc import TimeoutError as SQLTimeoutError, ProgrammingError, OperationalError, InterfaceError, DBAPIError
 
 from config.pipeline_config import get_pipeline_config
 from core.db_connector import get_engine
@@ -513,7 +513,46 @@ async def execute_sql(
     except Exception as e:
         # 其他数据库异常
         latency_ms = int((time.time() - start_time) * 1000)
-        error_msg = f"Database error: {str(e)}"
+        error_str = str(e)
+        
+        # 判断是否为 DB 连接不可用错误
+        # 注意：DBAPIError 很泛，不能一刀切当作 DB 不可用；否则会把 SQL 语法/列不存在/权限等业务错误误判为 503
+        is_db_unavailable = False
+        
+        # 1) 更"确定"的连接类异常：直接判定为 DB_UNAVAILABLE
+        if isinstance(e, (OperationalError, InterfaceError)):
+            is_db_unavailable = True
+        
+        # 2) DBAPIError：仅在"连接已失效"或命中连接关键字时判定为 DB_UNAVAILABLE
+        elif isinstance(e, DBAPIError):
+            # SQLAlchemy 对连接失效的标记（若存在）
+            if getattr(e, "connection_invalidated", False):
+                is_db_unavailable = True
+            else:
+                error_lower = error_str.lower()
+                connection_keywords = [
+                    "can't connect", "connection refused", "connection timeout",
+                    "connection reset", "connection lost", "connection closed",
+                    "unavailable", "refused", "timeout", "network", "2003", "2006"
+                ]
+                is_db_unavailable = any(keyword in error_lower for keyword in connection_keywords)
+        
+        # 3) 其他异常：字符串匹配兜底（捕获 SQLAlchemy 未包装的底层连接错误）
+        else:
+            error_lower = error_str.lower()
+            connection_keywords = [
+                "can't connect", "connection refused", "connection timeout",
+                "connection reset", "connection lost", "connection closed",
+                "unavailable", "refused", "timeout", "network", "2003", "2006"
+            ]
+            is_db_unavailable = any(keyword in error_lower for keyword in connection_keywords)
+        
+        if is_db_unavailable:
+            # 统一前缀标记，保证 Stage6/main 的 503 判断稳定可靠
+            error_msg = f"[DB_UNAVAILABLE] Database connection error: {error_str}"
+        else:
+            error_msg = f"Database error: {error_str}"
+        
         logger.error(
             "Unexpected database error",
             extra={

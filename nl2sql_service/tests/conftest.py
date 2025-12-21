@@ -281,6 +281,7 @@ path_marker_map = {
     "test_default_inference.py": ["unit"],
     "test_dialect_differences.py": ["unit"],
     "test_resource_cleanup.py": ["unit"],
+    "test_db_detect_upgrade.py": ["integration"],
     # Live 测试文件（使用完整相对路径避免冲突）
     # 注意：live 测试只允许有 live marker，不允许 unit/integration
     "live/test_e2e_live.py": ["e2e", "slow", "live"],

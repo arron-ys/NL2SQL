@@ -6,7 +6,10 @@ Semantic Registry Module
 """
 import asyncio
 import hashlib
+import inspect
 import os
+import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -99,6 +102,9 @@ class SemanticRegistry:
         # 当前指纹
         self._current_fingerprint: Optional[str] = None
         
+        # 临时 Qdrant 路径（仅当 fallback 到 instance_{pid} 时设置，用于退出时清理）
+        self._temp_qdrant_path: Optional[Path] = None
+        
         logger.info("SemanticRegistry instance created")
     
     async def close(self) -> None:
@@ -106,6 +112,7 @@ class SemanticRegistry:
         关闭 SemanticRegistry 并清理资源
         
         主要清理 Qdrant 客户端连接，避免资源泄漏和文件锁未关闭。
+        如果使用了临时 fallback 目录（instance_{pid}），会在关闭时自动清理。
         """
         if self.qdrant_client:
             try:
@@ -113,30 +120,74 @@ class SemanticRegistry:
                 # 注意：AsyncQdrantClient 可能没有 close/aclose 方法，需要检查
                 if hasattr(self.qdrant_client, "close"):
                     close_method = getattr(self.qdrant_client, "close")
-                    if asyncio.iscoroutinefunction(close_method):
-                        await close_method()
-                    else:
-                        close_method()
+                    res = close_method()
+                    if inspect.isawaitable(res):
+                        await res
                 elif hasattr(self.qdrant_client, "aclose"):
                     aclose_method = getattr(self.qdrant_client, "aclose")
-                    if asyncio.iscoroutinefunction(aclose_method):
-                        await aclose_method()
-                    else:
-                        aclose_method()
+                    res = aclose_method()
+                    if inspect.isawaitable(res):
+                        await res
                 # 如果都没有，尝试访问 _client 属性（内部 HTTP 客户端）
                 elif hasattr(self.qdrant_client, "_client"):
                     client = getattr(self.qdrant_client, "_client")
                     if hasattr(client, "close"):
                         close_method = getattr(client, "close")
-                        if asyncio.iscoroutinefunction(close_method):
-                            await close_method()
-                        else:
-                            close_method()
+                        res = close_method()
+                        if inspect.isawaitable(res):
+                            await res
                 logger.debug("Qdrant client closed successfully")
             except Exception as e:
                 logger.warning(f"Error closing Qdrant client: {e}")
             finally:
                 self.qdrant_client = None
+        
+        # B2: 清理临时 fallback 目录（仅当使用了 instance_{pid} 时）
+        if self._temp_qdrant_path and self._temp_qdrant_path.exists():
+            try:
+                # C: 安全删除 guard - 只允许删除真正的 fallback instance 目录
+                temp_path = self._temp_qdrant_path
+                
+                # 计算 fallback 根目录（必须与 _init_clients() 中创建 fallback_path 的逻辑一致）
+                store_path_str = os.getenv("VECTOR_STORE_PATH")
+                root = Path(store_path_str) if store_path_str else DEFAULT_STORAGE_PATH
+                
+                # 校验 1: 目录名必须严格匹配 instance_<pid数字> 格式（使用正则确保完整匹配）
+                is_valid_name = bool(re.match(r"^instance_\d+$", temp_path.name))
+                
+                # 校验 2: 目录必须位于 fallback 根目录之下（使用强校验：Path.is_relative_to）
+                is_relative = False
+                try:
+                    is_relative = temp_path.resolve().is_relative_to(root.resolve())
+                except (AttributeError, ValueError):
+                    # Python < 3.11 或路径不相关，使用备用强校验方法
+                    try:
+                        resolved_temp = temp_path.resolve()
+                        resolved_root = root.resolve()
+                        is_relative = resolved_root in resolved_temp.parents or resolved_temp == resolved_root
+                    except Exception:
+                        pass
+                
+                if is_valid_name and is_relative:
+                    # 通过双重校验，安全删除
+                    import shutil
+                    shutil.rmtree(temp_path, ignore_errors=True)
+                    logger.debug(f"Cleaned up temporary Qdrant directory: {temp_path}")
+                else:
+                    # 校验失败，不删除并记录警告
+                    logger.warning(
+                        "Refused to delete Qdrant directory: safety check failed",
+                        extra={
+                            "temp_path": str(temp_path),
+                            "root": str(root),
+                            "is_valid_name": is_valid_name,
+                            "is_relative": is_relative,
+                        },
+                    )
+            except Exception as e:
+                logger.warning(f"Error cleaning up temporary Qdrant directory {self._temp_qdrant_path}: {e}")
+            finally:
+                self._temp_qdrant_path = None
     
     @classmethod
     async def get_instance(cls) -> "SemanticRegistry":
@@ -641,36 +692,54 @@ class SemanticRegistry:
             # 确保目录存在
             store_path.mkdir(parents=True, exist_ok=True)
 
-            # 可选：为开发场景（如 uvicorn --reload 多进程）启用“每进程隔离”存储目录，避免文件锁冲突
+            # 可选：为开发场景（如 uvicorn --reload 多进程）启用"每进程隔离"存储目录，避免文件锁冲突
             isolate_per_process = os.getenv("VECTOR_STORE_ISOLATE_PER_PROCESS", "").lower() in {"1", "true", "yes", "on"}
             if isolate_per_process:
                 store_path = store_path / f"instance_{os.getpid()}"
                 store_path.mkdir(parents=True, exist_ok=True)
 
-            try:
-                self.qdrant_client = AsyncQdrantClient(path=str(store_path))
-                logger.info(f"Initialized Qdrant client in LOCAL mode, storage path: {store_path}")
-            except Exception as e:
-                # Windows + local Qdrant：当同一路径被另一个进程（如 reloader/旧进程）占用时会报：
-                # "already accessed by another instance" / portalocker AlreadyLocked
-                msg = str(e)
-                lock_like = ("already accessed by another instance" in msg.lower()) or ("alreadylocked" in msg.lower())
-                if not lock_like:
-                    raise
-
-                # 自动降级：切到每进程隔离目录，尽量保证服务可启动（不影响生产常规单进程场景）
-                fallback_path = (Path(store_path_str) if store_path_str else DEFAULT_STORAGE_PATH) / f"instance_{os.getpid()}"
-                fallback_path.mkdir(parents=True, exist_ok=True)
-                logger.warning(
-                    "Qdrant 路径被锁定，切换到进程隔离目录",
-                    extra={
-                        "original_path": str(store_path),
-                        "fallback_path": str(fallback_path),
-                        "error": msg,
-                    },
-                )
-                self.qdrant_client = AsyncQdrantClient(path=str(fallback_path))
-                logger.info(f"Qdrant 初始化 | 本地模式（进程隔离）| {fallback_path}")
+            # B1: 短暂重试窗口（最多 3 次，每次 0.3s，总耗时 <= 1s）
+            max_retries = 3
+            retry_delay = 0.3
+            last_exception = None
+            
+            for attempt in range(max_retries):
+                try:
+                    self.qdrant_client = AsyncQdrantClient(path=str(store_path))
+                    logger.info(f"Initialized Qdrant client in LOCAL mode, storage path: {store_path}")
+                    break  # 成功，退出重试循环
+                except Exception as e:
+                    last_exception = e
+                    msg = str(e)
+                    lock_like = ("already accessed by another instance" in msg.lower()) or ("alreadylocked" in msg.lower())
+                    
+                    if not lock_like:
+                        # 非锁冲突错误，直接抛出
+                        raise
+                    
+                    # 锁冲突：如果不是最后一次重试，等待后重试
+                    if attempt < max_retries - 1:
+                        logger.debug(
+                            f"Qdrant 路径被锁定，重试中 ({attempt + 1}/{max_retries})",
+                            extra={"path": str(store_path), "error": msg}
+                        )
+                        time.sleep(retry_delay)
+                    else:
+                        # 最后一次重试也失败，进入 fallback
+                        logger.warning(
+                            f"Qdrant 路径被锁定，重试 {max_retries} 次后仍失败，切换到进程隔离目录",
+                            extra={
+                                "original_path": str(store_path),
+                                "error": msg,
+                                "retries": max_retries,
+                            },
+                        )
+                        # B2: 自动降级到进程隔离目录，并记录临时路径用于清理
+                        fallback_path = (Path(store_path_str) if store_path_str else DEFAULT_STORAGE_PATH) / f"instance_{os.getpid()}"
+                        fallback_path.mkdir(parents=True, exist_ok=True)
+                        self._temp_qdrant_path = fallback_path  # 记录临时路径，退出时清理
+                        self.qdrant_client = AsyncQdrantClient(path=str(fallback_path))
+                        logger.info(f"Qdrant 初始化 | 本地模式（进程隔离）| {fallback_path}")
     
     async def initialize(self, yaml_path: str = "semantics") -> None:
         """
@@ -679,7 +748,7 @@ class SemanticRegistry:
         Args:
             yaml_path: YAML 文件目录路径
         """
-        self._init_clients()
+        await asyncio.to_thread(self._init_clients)
         await self.load_from_yaml(yaml_path)
     
     # ============================================================

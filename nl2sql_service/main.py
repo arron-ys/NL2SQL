@@ -43,7 +43,7 @@ from core.db_connector import close_all
 from core.pipeline_orchestrator import run_pipeline
 from core.semantic_registry import SemanticRegistry
 from core.errors import AppError, sanitize_details
-from schemas.answer import FinalAnswer
+from schemas.answer import FinalAnswer, FinalAnswerStatus
 from schemas.error import PipelineError
 from schemas.plan import QueryPlan
 from schemas.request import RequestContext
@@ -64,6 +64,13 @@ registry: Optional[SemanticRegistry] = None
 
 # 健康检查后台任务
 healthcheck_task: Optional[asyncio.Task] = None
+
+# DB 健康状态（进程内共享，模块级全局变量）
+db_ready: bool = False  # 默认 False（更安全）
+db_last_error: Optional[str] = None
+db_last_ok_ts: Optional[float] = None  # timestamp
+db_last_checked_ts: Optional[float] = None  # timestamp
+_db_state_lock = asyncio.Lock()  # 保护并发读写（healthcheck_loop + 启动探测）
 
 
 # ============================================================
@@ -91,6 +98,38 @@ async def healthcheck_loop():
     try:
         while True:
             await asyncio.sleep(interval_sec)
+            
+            # DB 连接健康检查
+            from core.db_connector import probe_db_connection
+            
+            global db_ready, db_last_error, db_last_ok_ts, db_last_checked_ts
+            db_ok, db_error = await probe_db_connection(timeout_sec=2.0)
+            
+            async with _db_state_lock:
+                db_last_checked_ts = time.time()
+                old_ready = db_ready
+                db_ready = db_ok
+                
+                if db_ok:
+                    db_last_ok_ts = time.time()
+                    db_last_error = None
+                    # 状态跳变：从不可用到可用，记录 INFO（恢复）
+                    if not old_ready:
+                        logger.info("Database connection recovered", extra={"last_error": "N/A"})
+                else:
+                    db_last_error = db_error
+                    # 状态跳变：从可用到不可用，记录 WARNING（降级）
+                    if old_ready:
+                        logger.warning(
+                            "Database connection lost",
+                            extra={"error": db_error}
+                        )
+                    # 持续不可用：DEBUG 级别（避免刷屏）
+                    else:
+                        logger.debug(
+                            "Database connection still unavailable",
+                            extra={"error": db_error}
+                        )
             
             try:
                 ai_client = get_ai_client()
@@ -170,11 +209,29 @@ async def lifespan(app: FastAPI):
         # 初始化并加载 YAML 配置
         await registry.initialize(yaml_path)
         
+        # DB 连接探测（启动时）
+        from core.db_connector import probe_db_connection
+        
+        global db_ready, db_last_error, db_last_ok_ts, db_last_checked_ts
+        async with _db_state_lock:
+            db_ok, db_error = await probe_db_connection(timeout_sec=2.0)
+            db_ready = db_ok
+            db_last_checked_ts = time.time()
+            if db_ok:
+                db_last_ok_ts = time.time()
+                db_last_error = None
+                logger.info("✓ NL2SQL 服务已启动，等待请求")
+            else:
+                db_last_error = db_error
+                logger.error(
+                    "Database connection failed at startup",
+                    extra={"error": db_error}
+                )
+                logger.error("服务已启动，侦测到DB未连接（degraded）")
+                # 注意：此分支不打印 "✓ ...等待请求"，确保代码路径不会再打印 ✓
+        
         # 启动健康检查后台任务（长期：连接健康检查 + 自愈）
         healthcheck_task = asyncio.create_task(healthcheck_loop())
-
-        # 服务启动完成提示（便于前端/运维快速定位启动状态）
-        logger.info("✓ NL2SQL 服务已启动，等待请求")
     except Exception as e:
         logger.error(
             "SemanticRegistry 初始化失败",
@@ -264,6 +321,36 @@ async def health_check():
                 "timestamp": datetime.utcnow().isoformat(),
             }
         )
+
+
+@app.get("/health/ready", tags=["Health"])
+async def readiness_check():
+    """
+    Readiness 检查端点（Kubernetes readiness probe 语义）
+    
+    Returns:
+        JSONResponse: 
+      - db_ready=true: 200 OK
+      - db_ready=false: 503 Service Unavailable
+    """
+    global db_ready, db_last_error, db_last_ok_ts, db_last_checked_ts
+    async with _db_state_lock:
+        is_ready = db_ready
+        error_msg = db_last_error
+        last_ok = db_last_ok_ts
+        last_checked = db_last_checked_ts
+    
+    response_data = {
+        "db_ready": is_ready,
+        "db_last_error": error_msg,
+        "db_last_ok_ts": last_ok,
+        "db_last_checked_ts": last_checked
+    }
+    
+    if is_ready:
+        return JSONResponse(status_code=200, content=response_data)
+    else:
+        return JSONResponse(status_code=503, content=response_data)
 
 
 @app.get("/metrics", tags=["Health"])
@@ -758,6 +845,29 @@ async def execute_nl2sql(
     )
     
     try:
+        # DB 可用性闸门（避免浪费 LLM/Embedding 成本）
+        global db_ready, db_last_error, db_last_checked_ts
+        async with _db_state_lock:
+            if not db_ready:
+                error_msg = db_last_error or "Database unavailable"
+                logger.warning(
+                    "Request rejected: DB unavailable",
+                    extra={
+                        "db_last_error": db_last_error,
+                        "db_last_checked_ts": db_last_checked_ts
+                    }
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error_type": "DB_UNAVAILABLE",
+                        "message": f"Database is currently unavailable: {error_msg}",
+                        "retryable": True,
+                        "db_last_error": db_last_error,
+                        "db_last_checked_ts": db_last_checked_ts
+                    }
+                )
+        
         # 确保注册表已初始化
         if registry is None:
             raise RuntimeError("Semantic registry not initialized")
@@ -801,6 +911,28 @@ async def execute_nl2sql(
             batch_results=batch_results,
             original_question=request.question
         )
+        
+        # 检查是否为 DB 不可用导致的 ALL_FAILED（通过检查 batch_results 中的错误消息）
+        if final_answer.status == FinalAnswerStatus.ALL_FAILED:
+            has_db_unavailable = any(
+                item.get("execution_result") and 
+                item.get("execution_result").error and 
+                "[DB_UNAVAILABLE]" in item.get("execution_result").error
+                for item in batch_results
+            )
+            
+            if has_db_unavailable:
+                # DB 不可用导致 ALL_FAILED：返回 503（系统依赖不可用）
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error_type": "DB_UNAVAILABLE",
+                        "message": "Database is currently unavailable",
+                        "retryable": True,
+                        "answer_text": final_answer.answer_text,
+                        "data_list": [item.model_dump() for item in final_answer.data_list]
+                    }
+                )
         
         logger.info(
             f"✓ 请求完成 | 状态: {final_answer.status.value} | 子查询: {len(batch_results)} | 答案长度: {len(final_answer.answer_text)}",

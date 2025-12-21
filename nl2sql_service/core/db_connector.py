@@ -4,10 +4,12 @@ Database Connector Module
 管理 SQLAlchemy 异步连接池，提供统一的数据库连接接口。
 支持 MySQL 和 PostgreSQL 两种数据库方言。
 """
+import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Tuple
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from config.pipeline_config import get_pipeline_config, SupportedDialects
@@ -114,6 +116,31 @@ def get_engine(tenant_id: Optional[str] = None) -> AsyncEngine:
             raise RuntimeError(f"Database engine initialization failed: {e}") from e
     
     return _engine
+
+
+async def probe_db_connection(timeout_sec: float = 2.0) -> Tuple[bool, Optional[str]]:
+    """
+    探测数据库连接（真实执行 SELECT 1）
+    
+    Args:
+        timeout_sec: 超时时间（秒），默认 2.0
+    
+    Returns:
+        Tuple[bool, Optional[str]]: (是否成功, 错误消息)
+    """
+    try:
+        engine = get_engine()
+        
+        async def _probe():
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        
+        await asyncio.wait_for(_probe(), timeout=timeout_sec)
+        return True, None
+    except asyncio.TimeoutError:
+        return False, f"Database connection timeout after {timeout_sec}s"
+    except Exception as e:
+        return False, str(e)
 
 
 async def close_all() -> None:
