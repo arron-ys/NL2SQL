@@ -176,21 +176,14 @@ metrics:
 
 ## 接口形态（服务端对外）
 
-作为后端服务，它可以提供：
+作为后端服务，DataTalk 对外提供 2 类接口：
 
+**核心接口**
+- `POST /nl2sql/execute`：端到端执行，并返回结构化结果 + Answer
+
+**辅助调试接口**
 - `POST /nl2sql/plan`：只产出 PLAN（用于 Debug / 可视化 / 回归）
-- `POST /nl2sql/sql`：产出 SQL（用于审计）
-- `POST /nl2sql/execute`：执行并返回结构化结果 + Answer（端到端）
-
-- ## 🛠️ 技术架构与部署 (Technical Details)
-
-> *以下内容为技术实现细节，供开发者参考。*
-
-### [核心模块说明占位]
-*(此处将介绍 QueryPlan 定义与 Compiler 实现)*
-
-### [部署指南占位]
-*(Docker Compose 启动命令)*
+- `POST /nl2sql/sql`：只产出 SQL（用于审计 / 排障）
 
 
 ## 📸 演示 (Demo)
@@ -202,7 +195,7 @@ metrics:
 ## 📞 联系作者 (Contact)
 
 如果你对 **LLM 落地企业级数据分析**、**语义层架构设计** 感兴趣，欢迎通过以下方式交流：
-*   **Email**: [Your Email]
+*   **Email**: 357730794@qq.com
 *   **Blog/Resume**: [Your Link]
 
 
