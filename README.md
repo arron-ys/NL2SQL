@@ -196,6 +196,6 @@ metrics:
 
 如果你对 **LLM 落地企业级数据分析**、**语义层架构设计** 感兴趣，欢迎通过以下方式交流：
 *   **Email**: 357730794@qq.com
-*   **Blog/Resume**: [Your Link]
+*   **Wechat**: Aaron-Yin999
 
 
