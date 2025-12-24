@@ -36,7 +36,7 @@ class PipelineConfig(BaseSettings):
     # Retrieval 配置（检索相关）
     # ============================================================
     vector_search_top_k: int = Field(
-        default=20,
+        default=30,
         description="向量检索返回的 top-k 结果数量"
     )
     
@@ -50,6 +50,20 @@ class PipelineConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description="相似度阈值，用于过滤向量检索结果"
+    )
+    
+    max_description_length: int = Field(
+        default=50,
+        ge=10,
+        le=200,
+        description="Schema Context中描述字段的最大字符数（中文字符）"
+    )
+    
+    max_enum_values_display: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Schema Context中枚举值展示上限；当枚举总数>该值时不展示Values"
     )
     
     # ============================================================
@@ -108,6 +122,8 @@ def get_pipeline_config() -> PipelineConfig:
     """
     获取全局配置实例（单例模式）
     
+    配置在首次调用时从环境变量/.env 加载并缓存；运行时修改环境变量不会自动生效，需要重启进程。
+    
     Returns:
         PipelineConfig: 全局配置实例
         
@@ -118,9 +134,5 @@ def get_pipeline_config() -> PipelineConfig:
     if pipeline_config is None:
         pipeline_config = PipelineConfig()
     return pipeline_config
-
-
-# 初始化全局配置实例
-pipeline_config = PipelineConfig()
 
 

@@ -63,6 +63,7 @@ import pytest
 from core.semantic_registry import (
     SecurityConfigError,
     SecurityPolicyNotFound,
+    SemanticConfigurationError,
     SemanticRegistry,
 )
 
@@ -459,6 +460,49 @@ class TestGetAllowedIds:
         with pytest.raises(SecurityConfigError):
             registry.get_allowed_ids("ROLE_HR_HEAD")
 
+    @pytest.mark.unit
+    def test_get_allowed_ids_force_common_domain(self, mock_registry):
+        """
+        【测试目标】
+        1. 验证强制追加 COMMON 域：即使 role 的 domain_access 为空，COMMON 域的 term 也应被允许
+
+        【执行过程】
+        1. 创建一个 role，domain_access 为空列表，但 dimension_scope 包含 "COMMON_" 以允许 COMMON 域的维度
+        2. 在 metadata_map 中添加一个 domain_id="COMMON" 的 term
+        3. 调用 get_allowed_ids
+        4. 验证 COMMON 域的 term 在 allowed_ids 中
+
+        【预期结果】
+        1. domain_id="COMMON" 的 term 在 allowed_ids 中（即使 role 的 domain_access 为空，但 COMMON 域被强制追加）
+        """
+        # 创建一个 role，domain_access 为空，但 dimension_scope 包含 "COMMON_" 以允许 COMMON 域的维度
+        role_id = "ROLE_TEST_EMPTY_DOMAIN"
+        mock_registry._role_policy_map[role_id] = {
+            "policy_id": "POLICY_TEST",
+            "role_id": role_id,
+            "scopes": {
+                "domain_access": [],  # 空列表（但会被强制追加 COMMON）
+                "entity_scope": [],
+                "dimension_scope": ["COMMON_"],  # 允许 COMMON 域的维度
+                "metric_scope": []
+            }
+        }
+        
+        # 添加一个 COMMON 域的 term
+        common_term_id = "DIM_COMMON_TIME"
+        mock_registry.metadata_map[common_term_id] = {
+            "id": common_term_id,
+            "name": "通用时间维度",
+            "domain_id": "COMMON",
+            "type": "DIMENSION"
+        }
+        
+        # 调用 get_allowed_ids
+        allowed_ids = mock_registry.get_allowed_ids(role_id)
+        
+        # 验证 COMMON 域的 term 在 allowed_ids 中
+        assert common_term_id in allowed_ids, "COMMON 域的 term 应该被允许，即使 role 的 domain_access 为空（COMMON 域被强制追加）"
+
 
 # ============================================================
 # check_compatibility() 测试
@@ -672,3 +716,349 @@ class TestPermissionFiltering:
         assert len(ids_lower) > 0
         # 大写的 "GMV" 不在索引中（除非也添加了）
         # 这说明了实际使用中需要做大小写转换
+
+
+# ============================================================
+# common_vocabulary 加载与索引测试
+# ============================================================
+
+
+class TestCommonVocabulary:
+    """common_vocabulary 加载与索引测试组"""
+
+    @pytest.mark.unit
+    def test_loads_vocabulary_to_metadata_map(self):
+        """
+        【测试目标】
+        1. 验证 registry 加载 semantic_common.yaml 后，metadata_map 中存在 VOCAB_* 项
+
+        【执行过程】
+        1. 创建 registry 并调用 _build_metadata_map，传入包含 common_vocabulary 的 yaml_data
+        2. 验证 metadata_map 中包含 vocabulary 项
+
+        【预期结果】
+        1. metadata_map 中存在 VOCAB_COMPARE_MODE_YOY
+        2. vocab_def 保留 vocab_type（来自 YAML type），value 正确
+        3. vocab_def 的 type 为 "VOCABULARY"
+        """
+        registry = SemanticRegistry()
+        yaml_data = {
+            "global_config": {
+                "common_vocabulary": [
+                    {
+                        "term": "同比",
+                        "aliases": ["YoY", "Year over Year"],
+                        "type": "COMPARE_MODE",
+                        "value": "YOY"
+                    }
+                ]
+            }
+        }
+        registry._build_metadata_map(yaml_data)
+        
+        vocab_id = "VOCAB_COMPARE_MODE_YOY"
+        assert vocab_id in registry.metadata_map
+        
+        vocab_def = registry.metadata_map[vocab_id]
+        assert vocab_def["vocab_type"] == "COMPARE_MODE"  # 来自 YAML type
+        assert vocab_def["type"] == "VOCABULARY"  # 内部 type
+        assert vocab_def["value"] == "YOY"
+        assert vocab_def["term"] == "同比"
+        assert vocab_def["name"] == "同比"  # term 映射为 name
+
+    @pytest.mark.unit
+    def test_keyword_index_contains_vocab_term_and_aliases(self):
+        """
+        【测试目标】
+        1. 验证 keyword_index 能通过 vocab.term 与至少一个 alias 命中对应 vocab_id
+
+        【执行过程】
+        1. 创建 registry 并加载包含 common_vocabulary 的 yaml_data
+        2. 验证 keyword_index 中包含 term 和 aliases 的映射
+
+        【预期结果】
+        1. keyword_index["同比"] 包含 VOCAB_COMPARE_MODE_YOY
+        2. keyword_index["YoY"] 包含 VOCAB_COMPARE_MODE_YOY
+        3. keyword_index["Year over Year"] 包含 VOCAB_COMPARE_MODE_YOY
+        """
+        registry = SemanticRegistry()
+        yaml_data = {
+            "global_config": {
+                "common_vocabulary": [
+                    {
+                        "term": "同比",
+                        "aliases": ["YoY", "Year over Year"],
+                        "type": "COMPARE_MODE",
+                        "value": "YOY"
+                    }
+                ]
+            }
+        }
+        registry._build_metadata_map(yaml_data)
+        
+        vocab_id = "VOCAB_COMPARE_MODE_YOY"
+        
+        # 验证 term 能命中
+        assert "同比" in registry.keyword_index
+        assert vocab_id in registry.keyword_index["同比"]
+        
+        # 验证 aliases 能命中
+        assert "YoY" in registry.keyword_index
+        assert vocab_id in registry.keyword_index["YoY"]
+        assert "Year over Year" in registry.keyword_index
+        assert vocab_id in registry.keyword_index["Year over Year"]
+
+    @pytest.mark.unit
+    def test_vocab_id_generation_without_value(self):
+        """
+        【测试目标】
+        1. 验证没有 value 的 vocabulary 生成正确的 vocab_id
+
+        【执行过程】
+        1. 创建 vocabulary 项，不包含 value 字段
+        2. 验证生成的 vocab_id
+
+        【预期结果】
+        1. vocab_id 为 VOCAB_{TYPE} 格式（无 value 部分）
+        """
+        registry = SemanticRegistry()
+        yaml_data = {
+            "global_config": {
+                "common_vocabulary": [
+                    {
+                        "term": "测试词",
+                        "aliases": [],
+                        "type": "TEST_TYPE"
+                        # 没有 value
+                    }
+                ]
+            }
+        }
+        registry._build_metadata_map(yaml_data)
+        
+        vocab_id = "VOCAB_TEST_TYPE"
+        assert vocab_id in registry.metadata_map
+
+    @pytest.mark.unit
+    def test_vocab_id_collision_raises_error(self):
+        """
+        【测试目标】
+        1. 验证重复 vocab_id（type + value 组合重复）抛出 SemanticConfigurationError
+
+        【执行过程】
+        1. 创建两个 vocabulary 项，具有相同的 type 和 value
+        2. 调用 _build_metadata_map
+
+        【预期结果】
+        1. 抛出 SemanticConfigurationError
+        2. 错误消息包含 "Duplicate vocabulary ID"
+        """
+        registry = SemanticRegistry()
+        yaml_data = {
+            "global_config": {
+                "common_vocabulary": [
+                    {
+                        "term": "同比",
+                        "aliases": [],
+                        "type": "COMPARE_MODE",
+                        "value": "YOY"
+                    },
+                    {
+                        "term": "同比2",  # 不同的 term，但 type + value 相同
+                        "aliases": [],
+                        "type": "COMPARE_MODE",
+                        "value": "YOY"
+                    }
+                ]
+            }
+        }
+        
+        with pytest.raises(SemanticConfigurationError) as exc_info:
+            registry._build_metadata_map(yaml_data)
+        
+        assert "Duplicate vocabulary ID" in str(exc_info.value)
+        assert "VOCAB_COMPARE_MODE_YOY" in str(exc_info.value)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_reindex_qdrant_vocabulary_search_text(self):
+        """
+        【测试目标】
+        1. 验证 qdrant reindex 构建的 search_text 对 vocabulary 包含 term 与 alias
+
+        【执行过程】
+        1. Mock _get_jina_embedding 和 qdrant_client
+        2. 创建 registry 并加载 vocabulary
+        3. 调用 _reindex_qdrant
+        4. 捕获传递给 _get_jina_embedding 的 search_text
+
+        【预期结果】
+        1. vocabulary 的 search_text 包含 term 和至少一个 alias
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        
+        registry = SemanticRegistry()
+        yaml_data = {
+            "global_config": {
+                "common_vocabulary": [
+                    {
+                        "term": "同比",
+                        "aliases": ["YoY", "Year over Year"],
+                        "type": "COMPARE_MODE",
+                        "value": "YOY"
+                    }
+                ]
+            }
+        }
+        registry._build_metadata_map(yaml_data)
+        
+        # Mock qdrant client
+        registry.qdrant_client = MagicMock()
+        registry.qdrant_client.delete_collection = AsyncMock()
+        registry.qdrant_client.create_collection = AsyncMock()
+        registry.qdrant_client.upsert = AsyncMock()
+        
+        # 捕获传递给 _get_jina_embedding 的参数
+        captured_search_texts = []
+        
+        async def mock_get_embedding(text):
+            captured_search_texts.append(text)
+            return [0.0] * 1024  # 返回 1024 维向量
+        
+        registry._get_jina_embedding = mock_get_embedding
+        
+        # 调用 _reindex_qdrant
+        await registry._reindex_qdrant()
+        
+        # 验证 vocabulary 的 search_text
+        vocab_search_text = None
+        for text in captured_search_texts:
+            if "同比" in text and "YoY" in text:
+                vocab_search_text = text
+                break
+        
+        assert vocab_search_text is not None
+        assert "同比" in vocab_search_text
+        assert "YoY" in vocab_search_text
+        assert "Year over Year" in vocab_search_text
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_reindex_qdrant_vocabulary_payload_name_defined(self):
+        """
+        【测试目标】
+        1. 验证 qdrant reindex 对 vocabulary 构建 payload 时，name 字段已定义（修复 NameError）
+
+        【执行过程】
+        1. Mock qdrant client 和 _get_jina_embedding
+        2. 创建 registry 并加载 vocabulary
+        3. 调用 _reindex_qdrant
+        4. 验证不会抛 NameError
+
+        【预期结果】
+        1. _reindex_qdrant 执行成功，不抛 NameError
+        2. payload 中包含正确的 name 字段（来自 term）
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        
+        registry = SemanticRegistry()
+        yaml_data = {
+            "global_config": {
+                "common_vocabulary": [
+                    {
+                        "term": "同比",
+                        "aliases": ["YoY"],
+                        "type": "COMPARE_MODE",
+                        "value": "YOY"
+                    }
+                ]
+            }
+        }
+        registry._build_metadata_map(yaml_data)
+        
+        # Mock qdrant client
+        registry.qdrant_client = MagicMock()
+        registry.qdrant_client.delete_collection = AsyncMock()
+        registry.qdrant_client.create_collection = AsyncMock()
+        registry.qdrant_client.upsert = AsyncMock()
+        
+        # 捕获传递给 upsert 的 points，验证 payload 中的 name 字段
+        captured_points = []
+        
+        async def mock_upsert(collection_name, points):
+            captured_points.extend(points)
+        
+        registry.qdrant_client.upsert = mock_upsert
+        
+        # Mock _get_jina_embedding
+        async def mock_get_embedding(text):
+            return [0.0] * 1024
+        
+        registry._get_jina_embedding = mock_get_embedding
+        
+        # 调用 _reindex_qdrant（应该不抛 NameError）
+        await registry._reindex_qdrant()
+        
+        # 验证 payload 中包含 name 字段（来自 term）
+        vocab_point = None
+        for point in captured_points:
+            if point.payload.get("id") == "VOCAB_COMPARE_MODE_YOY":
+                vocab_point = point
+                break
+        
+        assert vocab_point is not None
+        assert "name" in vocab_point.payload
+        assert vocab_point.payload["name"] == "同比"  # 来自 term
+
+    @pytest.mark.unit
+    def test_vocabulary_allowed_in_permission_filter(self):
+        """
+        【测试目标】
+        1. 验证 VOCAB_ 前缀的条目在权限过滤后仍能被保留（不被误杀）
+
+        【执行过程】
+        1. 创建 registry 并加载 vocabulary
+        2. 设置 security_policies（任意角色）
+        3. 调用 get_allowed_ids
+        4. 验证 VOCAB_ 条目在 allowed_ids 中
+
+        【预期结果】
+        1. VOCAB_COMPARE_MODE_YOY 在 allowed_ids 中
+        """
+        registry = SemanticRegistry()
+        yaml_data = {
+            "global_config": {
+                "common_vocabulary": [
+                    {
+                        "term": "同比",
+                        "aliases": ["YoY"],
+                        "type": "COMPARE_MODE",
+                        "value": "YOY"
+                    }
+                ]
+            }
+        }
+        registry._build_metadata_map(yaml_data)
+        
+        # 设置 security_policies（最小配置，确保权限检查逻辑运行）
+        registry._security_policies = {
+            "role_policies": [
+                {
+                    "policy_id": "POLICY_TEST",
+                    "role_id": "ROLE_TEST",
+                    "scopes": {
+                        "domain_access": ["SALES"],  # vocabulary 没有 domain_id，应该不受影响
+                        "entity_scope": [],
+                        "metric_scope": [],
+                        "dimension_scope": [],
+                    },
+                }
+            ]
+        }
+        registry._rebuild_security_indexes()
+        
+        # 调用 get_allowed_ids
+        allowed_ids = registry.get_allowed_ids("ROLE_TEST")
+        
+        # 验证 VOCAB_ 条目在 allowed_ids 中（应该默认允许）
+        assert "VOCAB_COMPARE_MODE_YOY" in allowed_ids

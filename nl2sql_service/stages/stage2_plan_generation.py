@@ -109,6 +109,9 @@ def _format_schema_context(terms: List[str], registry: SemanticRegistry) -> str:
     Returns:
         str: 格式化后的上下文字符串
     """
+    # 获取配置
+    config = get_pipeline_config()
+    
     metrics_lines = []
     dimensions_lines = []
     
@@ -129,30 +132,54 @@ def _format_schema_context(terms: List[str], registry: SemanticRegistry) -> str:
         aliases = term_def.get("aliases", [])
         description = term_def.get("description", "")
         
-        # 格式化别名
-        aliases_str = ", ".join(aliases) if aliases else "无"
+        # 3.2: aliases 为空时不输出字段
+        aliases_part = ""
+        if aliases:
+            aliases_str = ", ".join(aliases)
+            aliases_part = f" | Aliases: {aliases_str}"
+        
+        # 3.3: description 截断，为空时不输出
+        desc_part = ""
+        if description:
+            # 截断到最大字符数（使用配置）
+            max_desc_len = config.max_description_length
+            desc_truncated = description[:max_desc_len] if len(description) > max_desc_len else description
+            desc_part = f" | Desc: {desc_truncated}"
         
         # 构建基础行
-        base_line = f"ID: {term_id} | Name: {name} | Aliases: {aliases_str} | Desc: {description}"
+        base_line = f"ID: {term_id} | Name: {name}{aliases_part}{desc_part}"
         
-        # 对于维度，检查是否有枚举值
+        # 对于维度，检查是否有枚举值和时间标记
         if is_dimension:
+            # 3.4: 时间维度标记
+            is_time_dimension = term_def.get("is_time_dimension", False)
+            if is_time_dimension:
+                base_line += " | Is_Time: True"
+            
+            # 3.5: 枚举透出新口径
             enum_value_set_id = term_def.get("enum_value_set_id")
             if enum_value_set_id:
                 # 获取枚举定义
                 enum_def = registry.get_term(enum_value_set_id)
                 if enum_def and "values" in enum_def:
                     enum_values = enum_def["values"]
-                    # 只显示前几个枚举值（反幻觉技术）
-                    if len(enum_values) > 5:
-                        values_str = ", ".join(enum_values[:5]) + f"... (共{len(enum_values)}个)"
-                    else:
-                        values_str = ", ".join(enum_values)
-                    base_line += f" | Values: [{values_str}]"
+                    max_enum_display = config.max_enum_values_display
+                    # 如果 len(enum_values) <= max_enum_display：输出 Values，展示最多 max_enum_display 个
+                    # 如果 len(enum_values) > max_enum_display：完全不输出 Values 字段（避免 token 爆炸/误导）
+                    if len(enum_values) <= max_enum_display:
+                        values_to_show = enum_values[:max_enum_display]
+                        if values_to_show:  # 仅当非空时输出
+                            values_str = ", ".join(values_to_show)
+                            base_line += f" | Values: [{values_str}]"
+                    # > max_enum_display 时不追加 Values 字段
             
             dimensions_lines.append(base_line)
         elif is_metric:
             metrics_lines.append(base_line)
+    
+    # 3.1: 组内排序（确定性）- 按 term_id 字母序排序
+    metrics_lines.sort()
+    dimensions_lines.sort()
     
     # 组装最终文本
     context_parts = []

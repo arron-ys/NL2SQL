@@ -3,8 +3,7 @@ version: "2.1.1"
 description: "全局通用配置。包含全局时间窗口定义与通用 NLP 词汇表。"
 
 global_config:
-  global_settings:
-    default_time_window_id: "TIME_DEFAULT_30D"
+  default_time_window_id: "TIME_DEFAULT_30D"
 
   time_windows:
     - id: "TIME_DEFAULT_30D"

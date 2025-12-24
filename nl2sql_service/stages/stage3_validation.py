@@ -103,15 +103,11 @@ def _get_global_default_time_window_id(registry: SemanticRegistry) -> Optional[s
     """
     读取全局默认 time_window_id。
 
-    兼容两种配置形态：
-    - 新：global_config.default_time_window
-    - 旧：global_config.global_settings.default_time_window_id
+    配置路径：global_config.default_time_window_id
     """
     if not isinstance(registry.global_config, dict):
         return None
-    if registry.global_config.get("default_time_window"):
-        return registry.global_config.get("default_time_window")
-    return registry.global_config.get("global_settings", {}).get("default_time_window_id")
+    return registry.global_config.get("default_time_window_id")
 
 
 def _infer_time_field_id(metric_id: str, registry: SemanticRegistry) -> Optional[str]:
@@ -177,7 +173,7 @@ def _compute_metric_time_candidate(
                 "metric_name": metric_name,
                 "missing": [
                     "metrics[*].default_time.time_window_id",
-                    "global_config.default_time_window (or global_config.global_settings.default_time_window_id)",
+                    "global_config.default_time_window_id",
                 ],
             },
         )

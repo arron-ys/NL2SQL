@@ -79,6 +79,7 @@ from stages.stage3_validation import (
     MissingMetricError,
     PermissionDeniedError,
     UnsupportedMultiFactError,
+    _get_global_default_time_window_id,
     validate_and_normalize_plan,
 )
 
@@ -122,7 +123,7 @@ def mock_registry():
     }
     # 默认全局配置：提供全局默认时间窗口（避免与 Stage3 时间补全策略冲突）
     registry.global_config = {
-        "global_settings": {"default_time_window_id": "TIME_DEFAULT_30D"},
+        "default_time_window_id": "TIME_DEFAULT_30D",
         "time_windows": [
             {
                 "id": "TIME_DEFAULT_30D",
@@ -758,7 +759,7 @@ class TestNormalizationAndInjection:
             "default_time_field_id": "ORDER_DATE",
         }
         mock_registry.global_config = {
-            "global_settings": {"default_time_window_id": "TIME_DEFAULT_30D"},
+            "default_time_window_id": "TIME_DEFAULT_30D",
             "time_windows": [
                 {"id": "TIME_LAST_30D", "name": "最近30天", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
                 {"id": "TIME_DEFAULT_30D", "name": "默认时间窗口（近30天）", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
@@ -814,7 +815,7 @@ class TestNormalizationAndInjection:
             "default_time_field_id": "ORDER_DATE",
         }
         mock_registry.global_config = {
-            "global_settings": {"default_time_window_id": "TIME_DEFAULT_30D"},
+            "default_time_window_id": "TIME_DEFAULT_30D",
             "time_windows": [
                 {"id": "TIME_DEFAULT_30D", "name": "默认时间窗口（近30天）", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
             ],
@@ -859,7 +860,7 @@ class TestNormalizationAndInjection:
             "default_filters": [],
         }
         mock_registry.get_entity_def.return_value = {"id": "ENT_SALES_ORDER_ITEM", "default_time_field_id": "ORDER_DATE"}
-        mock_registry.global_config = {"global_settings": {}, "time_windows": []}
+        mock_registry.global_config = {"time_windows": []}
 
         plan = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
         with pytest.raises(ConfigurationError) as exc_info:
@@ -874,12 +875,81 @@ class TestNormalizationAndInjection:
             "default_time": {"time_field_id": "ORDER_DATE", "time_window_id": "TIME_NOT_EXIST"},
             "default_filters": [],
         }
-        mock_registry.global_config = {"global_settings": {}, "time_windows": []}
+        mock_registry.global_config = {"time_windows": []}
         plan2 = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
         with pytest.raises(ConfigurationError) as exc_info2:
             await validate_and_normalize_plan(plan2, mock_context, mock_registry)
         assert getattr(exc_info2.value, "code", None) == "CONFIGURATION_ERROR"
         assert "TIME_NOT_EXIST" in str(exc_info2.value)
+
+    @pytest.mark.unit
+    def test_get_global_default_time_window_id_canonical_path(self):
+        """
+        【测试目标】
+        1. 验证规范路径 global_config.default_time_window_id 返回正确值
+
+        【执行过程】
+        1. 创建 mock registry，global_config 包含规范路径 default_time_window_id
+        2. 调用 _get_global_default_time_window_id
+
+        【预期结果】
+        1. 返回规范路径的值 "TIME_DEFAULT_30D"
+        """
+        from unittest.mock import MagicMock
+        mock_registry = MagicMock()
+        mock_registry.global_config = {
+            "default_time_window_id": "TIME_DEFAULT_30D",
+            "time_windows": []
+        }
+        
+        result = _get_global_default_time_window_id(mock_registry)
+        assert result == "TIME_DEFAULT_30D"
+
+    @pytest.mark.unit
+    def test_get_global_default_time_window_id_deprecated_nested_path_ignored(self):
+        """
+        【测试目标】
+        1. 验证废弃嵌套路径 global_config.global_settings.default_time_window_id 不再生效
+
+        【执行过程】
+        1. 创建 mock registry，只提供废弃嵌套路径，规范路径缺失
+        2. 调用 _get_global_default_time_window_id
+
+        【预期结果】
+        1. 返回 None（废弃路径被忽略）
+        """
+        from unittest.mock import MagicMock
+        mock_registry = MagicMock()
+        mock_registry.global_config = {
+            "global_settings": {"default_time_window_id": "TIME_DEPRECATED"},
+            "time_windows": []
+        }
+        
+        result = _get_global_default_time_window_id(mock_registry)
+        assert result is None
+
+    @pytest.mark.unit
+    def test_get_global_default_time_window_id_deprecated_flat_path_ignored(self):
+        """
+        【测试目标】
+        1. 验证废弃扁平路径 global_config.default_time_window（不带 _id）不再生效
+
+        【执行过程】
+        1. 创建 mock registry，只提供废弃扁平路径 default_time_window，规范路径缺失
+        2. 调用 _get_global_default_time_window_id
+
+        【预期结果】
+        1. 返回 None（废弃路径被忽略）
+        """
+        from unittest.mock import MagicMock
+        mock_registry = MagicMock()
+        mock_registry.global_config = {
+            "default_time_window": "TIME_DEPRECATED",
+            "time_windows": []
+        }
+        
+        result = _get_global_default_time_window_id(mock_registry)
+        assert result is None
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -925,7 +995,7 @@ class TestNormalizationAndInjection:
         mock_registry.get_metric_def.side_effect = metric_def_side_effect
         mock_registry.get_entity_def.side_effect = lambda eid: {"id": eid, "default_time_field_id": "ORDER_DATE"}
         mock_registry.global_config = {
-            "global_settings": {"default_time_window_id": "TIME_DEFAULT_30D"},
+            "default_time_window_id": "TIME_DEFAULT_30D",
             "time_windows": [
                 {"id": "TIME_LAST_30D", "name": "最近30天", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
                 {"id": "TIME_AS_OF_TODAY", "name": "当前时点", "template": {"type": "ABSOLUTE", "end": "CURRENT_DATE"}},

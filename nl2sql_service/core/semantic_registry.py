@@ -422,6 +422,67 @@ class SemanticRegistry:
             self.metadata_map[entity_id] = entity_def
             self._add_to_keyword_index(entity_id, entity_def)
         
+        # =========================================================
+        # 处理通用词汇表 (Common Vocabulary)
+        # =========================================================
+        common_vocab_list = []
+        if isinstance(self.global_config, dict):
+            common_vocab_list = self.global_config.get("common_vocabulary", []) or []
+        
+        if isinstance(common_vocab_list, list):
+            for vocab_item in common_vocab_list:
+                if not isinstance(vocab_item, dict):
+                    continue
+                
+                term = vocab_item.get("term")
+                if not term:
+                    continue
+                
+                # 保存 YAML 的 type 到 vocab_type，设置内部 type 为 VOCABULARY
+                vocab_type = vocab_item.get("type", "UNKNOWN")
+                vocab_value = vocab_item.get("value")
+                
+                # 生成稳定且不冲突的 vocab_id
+                # 规则：VOCAB_{VOCAB_TYPE} 或 VOCAB_{VOCAB_TYPE}_{VALUE}
+                # 全部转为大写字符串；非字母数字用下划线替换
+                vocab_id_base = f"VOCAB_{vocab_type.upper().replace('-', '_').replace(' ', '_')}"
+                if vocab_value is not None:
+                    # 将 value 转换为字符串并规范化
+                    value_str = str(vocab_value).upper().replace('-', '_').replace(' ', '_')
+                    # 移除非字母数字字符（保留下划线）
+                    value_str = re.sub(r'[^A-Z0-9_]', '_', value_str)
+                    vocab_id = f"{vocab_id_base}_{value_str}"
+                else:
+                    vocab_id = vocab_id_base
+                
+                # 检查冲突
+                if vocab_id in self.metadata_map:
+                    existing_term = self.metadata_map[vocab_id].get("term", "")
+                    raise SemanticConfigurationError(
+                        f"Duplicate vocabulary ID: {vocab_id}. "
+                        f"Multiple vocabulary items share the same type={vocab_type} and value={vocab_value}",
+                        details={
+                            "vocab_id": vocab_id,
+                            "vocab_type": vocab_type,
+                            "value": vocab_value,
+                            "existing_term": existing_term,
+                            "conflicting_term": term
+                        }
+                    )
+                
+                # 构建词汇定义对象
+                vocab_def = vocab_item.copy()
+                vocab_def["vocab_type"] = vocab_type  # 保存 YAML 的 type
+                vocab_def["type"] = "VOCABULARY"  # 设置内部 type
+                vocab_def["id"] = vocab_id  # 设置生成的 ID
+                vocab_def["name"] = term  # 将 term 映射为 name，让 _add_to_keyword_index 能处理
+                
+                # 注册到 metadata_map
+                self.metadata_map[vocab_id] = vocab_def
+                
+                # 添加到关键词索引（term 和所有 aliases）
+                self._add_to_keyword_index(vocab_id, vocab_def)
+        
         logger.info(
             f"Built metadata_map: {len(self.metadata_map)} items, "
             f"keyword_index: {len(self.keyword_index)} entries"
@@ -530,10 +591,25 @@ class SemanticRegistry:
         point_id = 1  # 从 1 开始，0 用于存储系统元数据
         
         for term_id, term_def in self.metadata_map.items():
-            # 构建搜索文本（名称 + 描述）
-            name = term_def.get("name", "")
-            description = term_def.get("description", "")
-            search_text = f"{name} {description}".strip()
+            term_type = term_def.get("type", "UNKNOWN")
+            
+            # 构建搜索文本（根据类型不同采用不同策略）
+            # 同时确保 payload 使用的 name 字段已定义
+            if term_type == "VOCABULARY":
+                # vocabulary: term + aliases
+                term = term_def.get("term") or term_def.get("name", "")
+                aliases = term_def.get("aliases", [])
+                alias_text = " ".join(aliases) if isinstance(aliases, list) else ""
+                search_text = f"{term} {alias_text}".strip()
+                # 对于 vocabulary，payload 使用 term 作为 name
+                payload_name = term
+            else:
+                # 其他类型：name + description
+                name = term_def.get("name", "")
+                description = term_def.get("description", "")
+                search_text = f"{name} {description}".strip()
+                # 对于其他类型，payload 使用 name
+                payload_name = name
             
             if not search_text:
                 continue
@@ -549,7 +625,7 @@ class SemanticRegistry:
                         vector=embedding,
                         payload={
                             "id": term_id,
-                            "name": name,
+                            "name": payload_name,
                             "type": term_def.get("type", "UNKNOWN")
                         }
                     )
@@ -901,6 +977,8 @@ class SemanticRegistry:
 
         domain_access_list = _as_str_list(list(domain_access))
         domain_access = set(domain_access_list)
+        # Critical Fix: 强制追加 COMMON 域，确保通用维度（如时间、地理位置）对所有用户可见
+        domain_access = domain_access | {"COMMON"}
         entity_scope = _as_str_list(entity_scope)
         dimension_scope = _as_str_list(dimension_scope)
         metric_scope = _as_str_list(metric_scope)
@@ -914,6 +992,8 @@ class SemanticRegistry:
                 return "DIM"
             if term_id.startswith("ENT_"):
                 return "ENT"
+            if term_id.startswith("VOCAB_"):
+                return "VOCABULARY"
             return "OTHER"
 
         def _domain_allowed(term_domain: Optional[str]) -> bool:
@@ -939,7 +1019,7 @@ class SemanticRegistry:
         ent_domain_families = {s for s in entity_scope if s.endswith("_") and not s.startswith("ENT_")}
 
         allowed_ids: Set[str] = set()
-        type_counts = {"METRIC": 0, "DIM": 0, "ENT": 0, "OTHER": 0}
+        type_counts = {"METRIC": 0, "DIM": 0, "ENT": 0, "VOCABULARY": 0, "OTHER": 0}
 
         for term_id, term_def in self.metadata_map.items():
             if not isinstance(term_id, str):
@@ -948,6 +1028,14 @@ class SemanticRegistry:
                 continue
 
             ttype = _term_type(term_id)
+            
+            # VOCABULARY 类型（通用词汇映射）不对应真实业务数据表/字段，不应纳入 RBAC 数据权限控制
+            # 因此跳过 domain 检查，直接允许
+            if ttype == "VOCABULARY":
+                allowed_ids.add(term_id)
+                type_counts["VOCABULARY"] = type_counts.get("VOCABULARY", 0) + 1
+                continue
+            
             term_domain = term_def.get("domain_id")
             if not _domain_allowed(term_domain):
                 continue
@@ -1025,6 +1113,7 @@ class SemanticRegistry:
                 "allowed_metric": type_counts.get("METRIC", 0),
                 "allowed_dim": type_counts.get("DIM", 0),
                 "allowed_ent": type_counts.get("ENT", 0),
+                "allowed_vocab": type_counts.get("VOCABULARY", 0),
                 "allowed_other": type_counts.get("OTHER", 0),
             },
         )
