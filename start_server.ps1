@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Host = "127.0.0.1",
-    [int]$Port = 8000,
+    [string]$BindAddress = "127.0.0.1",
+    [int]$BindPort = 8000,
     [switch]$NoReload,
     [ValidateSet("local", "memory", "remote")]
     [string]$VectorStoreMode = "",
@@ -14,10 +14,11 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$serviceDir = Split-Path -Parent $scriptDir
-$repoRoot = Split-Path -Parent $serviceDir
+$repoRoot = $scriptDir
+$serviceDir = Join-Path $repoRoot "nl2sql_service"
 
 Push-Location $serviceDir
+
 
 try {
     $envPath = Join-Path $serviceDir ".env"
@@ -78,14 +79,14 @@ try {
     }
 
     Write-Host "Starting NL2SQL service..." -ForegroundColor Green
-    Write-Host "URL: http://$Host`:$Port" -ForegroundColor Cyan
+    Write-Host "URL: http://$BindAddress`:$BindPort" -ForegroundColor Cyan
     Write-Host "Ctrl+C to stop" -ForegroundColor Yellow
     Write-Host ""
 
     if ($NoReload) {
-        uvicorn main:app --host $Host --port $Port
+        uvicorn main:app --host $BindAddress --port $BindPort
     } else {
-        uvicorn main:app --host $Host --port $Port --reload
+        uvicorn main:app --host $BindAddress --port $BindPort --reload
     }
 
 } catch {
