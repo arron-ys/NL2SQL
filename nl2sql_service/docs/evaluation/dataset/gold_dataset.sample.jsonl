@@ -1,0 +1,3 @@
+{"case_id": "sample_001", "question": "查询最近7天的GMV", "expected_outcome": "返回最近7天的GMV数据，按日期升序排列", "order_sensitive": true, "gold_result": {"columns": ["date", "gmv"], "rows": [["2025-12-20", 1000000.0], ["2025-12-21", 1200000.0], ["2025-12-22", 1150000.0]]}, "notes": "正常查询用例：多行结果，顺序敏感"}
+{"case_id": "sample_002", "question": "查询1900年的GMV", "expected_outcome": "返回空结果（无数据）", "order_sensitive": false, "gold_result": {"columns": [], "rows": []}, "notes": "空结果用例：测试空集匹配"}
+{"case_id": "sample_003", "question": "查询所有订单明细", "expected_outcome": "返回订单明细（可能被截断）", "order_sensitive": false, "gold_result": {"columns": ["order_id", "amount"], "rows": [["ORD001", 100.0], ["ORD002", 200.0]], "is_truncated": true}, "notes": "截断用例：应记为UNSCORABLE"}
