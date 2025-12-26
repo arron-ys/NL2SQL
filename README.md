@@ -107,6 +107,132 @@
 ---
 
 
+
+
+## ✅ 评测（Evaluation / Benchmark）
+
+> 我们的目标不是做“大而全”的压测体系，而是在 **MVP + 单人交付** 的约束下做一套 **最小但闭环** 的评测：  
+> **结果对（EX）/ 能跑（VES）/ 不越权（RA） + 可归因（SR）**。  
+> 这样既能支撑持续迭代的回归对比，也能作为对外展示的可信证据。
+
+
+
+### 1) 为什么选这 3+1 个指标？
+
+我们对比过两类思路：
+
+- **方案A（交付/SLA型）**：覆盖性能、稳定性、安全等，但体系很快变重，MVP 阶段投入产出不高。
+- **方案B（架构验证型）**：少量指标直击企业落地的关键风险点。
+
+结合 DataTalk 的架构路线（语义层治理 + RAG + QueryPlan + 确定性编译 + 执行），我们最终收敛为 **3+1 指标**：
+
+- **EX（Execution Accuracy）**：最终结果是否正确 —— NL2SQL 的唯一真理
+- **VES（Valid Executable SQL）**：SQL 是否能稳定执行 —— 证明确定性编译的“可运行性护城河”
+- **RA（Refusal Accuracy）**：负样本是否严格拒答/澄清且不生成 SQL —— 企业安全边界（Fail-Closed）
+- **SR（Schema Recall）**：检索召回是否覆盖黄金所需 schema —— EX 失败时的“自动归因钥匙”
+
+
+
+### 2) 指标定义、评判标准与公式
+
+#### 2.1 符号约定
+- **P（Positive Set）**：正样本集合，预期 `expected_outcome = ANSWER`
+- **N（Negative Set）**：负样本集合，预期 `expected_outcome ∈ {REFUSE, ASK_CLARIFY}`
+- **Case**：单条测试用例
+- **Count(X)**：集合 X 的用例数量
+
+
+
+### 2.2 EX — Execution Accuracy（执行准确率）
+**定义**：仅在 **P** 中，系统返回结果集与黄金集在业务语义上完全一致的比例。
+
+**判定标准（一个 Case 通过需同时满足）**  
+比对前需对 Pred / Gold 做“可比较化”处理：
+1) **可比较化（canonicalize）**：  
+- 数值保持数值类型  
+- 文本转小写并 trim  
+- 日期/时间统一格式（如 ISO 8601）  
+- 复杂类型统一为稳定序列化（稳定 JSON，键排序）  
+- 空值统一为同一空值标记（如 `<NULL>`）
+
+2) **数值匹配**：所有数值列误差 `abs(diff) <= 1e-4`  
+3) **文本匹配**：忽略大小写与首尾空格后一致  
+4) **无序匹配（默认）**：除非显式要求排序（`order_sensitive=true`），否则按全列稳定排序后逐单元格比对  
+5) **空集一致**：Gold 为空则 Pred 也必须为空
+
+**公式**：  
+`EX = (P 中结果集完全匹配的用例数) / Count(P)`
+
+
+
+### 2.3 VES — Valid Executable SQL（SQL 可执行率）
+**定义**：仅在 **P** 中，系统生成的 SQL 在数据库侧 **执行成功且未超时** 的比例。  
+> 该指标只管“能不能跑”，不管“对不对”。
+
+**判定标准（一个 Case 通过需同时满足）**
+1) **接口正常**：HTTP 200，且非内部错误/崩溃类返回  
+2) **执行成功**：数据库返回结果集（含空集），无报错  
+3) **未超时**：执行耗时未超过系统阈值（以 `EXECUTION_TIMEOUT_MS` 为准）
+
+以下情况均视为失败：HTTP 5xx/内部错误、编译失败未产出 SQL、DB 执行报错、超时。
+
+**公式**：  
+`VES = (P 中接口正常 且 SQL执行成功 且 未超时的用例数) / Count(P)`
+
+
+
+### 2.4 RA — Refusal Accuracy（拒答准确率，Fail-Closed）
+**定义**：仅在 **N** 中，系统响应状态与预期一致，且 **绝对未生成 SQL** 的比例。  
+> 采用 Fail-Closed：负样本只要生成 SQL（即便未执行）也判失败。
+
+**判定标准（一个 Case 通过需同时满足）**
+1) **状态码严格匹配**：  
+- 若 Gold=REFUSE，则 `error.code == PERMISSION_DENIED`  
+- 若 Gold=ASK_CLARIFY，则 `error.code == NEED_CLARIFICATION`
+
+2) **安全硬规则：未生成 SQL**：  
+- 依据 `include_trace=true` 返回的 `debug_info`  
+- `debug_info.sql_queries` 必须为空列表（否则直接判失败）
+
+**公式**：  
+`RA = (N 中满足 Error Code 匹配 且 sql_queries 为空的用例数) / Count(N)`
+
+
+
+### 2.5 SR — Schema Recall（Schema 召回率，诊断指标）
+**定义**：仅在 **P** 中，检索到的 Schema ID 集合 **R** 对黄金标准所需 Schema ID 集合 **G** 的平均覆盖率（宏平均）。
+
+**判定标准**
+- `G`：黄金集标注的 `schema_ids`（Metric IDs + Dimension IDs）
+- `R`：系统 `debug_info.retrieved_schema_ids`（约束：来自 Stage2 的 final_terms）
+
+单例召回率：
+- 若 `Count(G) > 0`：`Recall_i = Count(G ∩ R) / Count(G)`
+- 若 `Count(G) == 0`：`Recall_i = 1.0`
+
+**公式**：  
+`SR = Avg(Recall_i) over P`
+
+
+
+### 3) 评测结果（当前版本）
+
+- 数据集规模：`P = 42，N = 12，Total = 54`
+- 版本：`v0.1.0`
+- 环境：`DB_TYPE=mysql，EXECUTION_TIMEOUT_MS=5000`
+
+| 指标 | 得分 |
+|---|---:|
+| EX（执行准确率） | **70%** |
+| VES（SQL 可执行率） | **88%** |
+| RA（拒答准确率） | **95%** |
+| SR（Schema 召回率） | **80%** |
+
+
+
+
+---
+
 ## 🏗️ 技术架构（Architecture）
 
 <img width="720" height="587" alt="DataTalk Architecture" src="https://github.com/user-attachments/assets/3df36ff2-ec11-45e4-b1b9-f917f9e90e14" />
