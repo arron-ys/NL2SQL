@@ -16,13 +16,20 @@ venv/
 env/
 ENV/
 
-# Test / coverage / typecheck
+# Test / coverage / typecheck / uattest
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 .coverage.*
 htmlcov/
+
+# UAT artifacts (keep scripts, ignore temp payload/output)
+uat_test*.json
+**/uat_test*.json
+nl2sql_service/scripts/uat/*.json
+uat_test*.py
+**/uat_test*.py
 
 # Build artifacts
 build/

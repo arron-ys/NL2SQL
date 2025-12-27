@@ -727,23 +727,21 @@ class TestNormalizationAndInjection:
     @pytest.mark.unit
     @pytest.mark.asyncio
     @patch("stages.stage3_validation.get_pipeline_config")
-    async def test_injects_metric_level_default_time_window(
+    async def test_no_time_cue_no_injection(
         self, mock_get_config, mock_registry, mock_context, mock_pipeline_config
     ):
         """
-        【测试目标】
-        1. 验证注入指标级默认时间窗口
+        【测试目标】T1
+        验证无时间词时不注入默认时间窗（情况A：完全没提时间）
 
         【执行过程】
-        1. mock metric 包含 default_time 配置
-        2. 构造 Plan 无 time_range
+        1. sub_query_description="公司总体销售额如何？"（无时间词）
+        2. plan.time_range=None
         3. 调用 validate_and_normalize_plan
-        4. 检查时间范围和警告
 
         【预期结果】
-        1. time_range 被注入
-        2. type 为 LAST_N，value 为 30
-        3. warnings 包含 "未指定时间" 和 "主指标" 相关提示
+        1. time_range 仍为 None（不注入）
+        2. warnings 包含 "未指定时间，默认查询全量历史数据"
         """
         mock_get_config.return_value = mock_pipeline_config
 
@@ -769,37 +767,36 @@ class TestNormalizationAndInjection:
         plan = QueryPlan(
             intent=PlanIntent.AGG,
             metrics=[MetricItem(id="METRIC_GMV")],
-            time_range=None,  # 没有时间范围
+            time_range=None,
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(
+            plan, mock_context, mock_registry,
+            sub_query_description="公司总体销售额如何？"  # 无时间词
+        )
 
-        assert result.time_range is not None
-        assert result.time_range.type == TimeRangeType.LAST_N
-        assert result.time_range.value == 30
-        assert any("未指定时间" in w and "主指标" in w for w in result.warnings)
-        assert any("默认配置" in w for w in result.warnings)
+        # 验证不注入
+        assert result.time_range is None
+        assert any("未指定时间，默认查询全量历史数据" in w for w in result.warnings)
 
     @pytest.mark.unit
     @pytest.mark.asyncio
     @patch("stages.stage3_validation.get_pipeline_config")
-    async def test_injects_global_default_time_window_when_metric_missing_default(
+    async def test_vague_time_cue_triggers_injection(
         self, mock_get_config, mock_registry, mock_context, mock_pipeline_config
     ):
         """
-        【测试目标】
-        1. 验证指标无默认时注入全局默认时间窗口
+        【测试目标】T2
+        验证模糊时间词触发默认时间窗注入（情况B：模糊时间词）
 
         【执行过程】
-        1. mock metric 缺少 default_time 配置
-        2. mock global_config 提供全局默认窗口
-        3. 构造 Plan 无 time_range
-        4. 调用 validate_and_normalize_plan
+        1. sub_query_description="最近公司总体销售额如何？"（包含模糊时间词"最近"）
+        2. plan.time_range=None
+        3. 调用 validate_and_normalize_plan
 
         【预期结果】
-        1. time_range 被注入（使用全局默认）
-        2. type 为 LAST_N，value 为 30
-        3. warnings 包含"未指定时间"和"全局默认"相关提示
+        1. time_range 被注入（不为 None）
+        2. warnings 包含 "检测到模糊时间表达"
         """
         mock_get_config.return_value = mock_pipeline_config
 
@@ -807,27 +804,92 @@ class TestNormalizationAndInjection:
             "id": "METRIC_GMV",
             "name": "GMV",
             "entity_id": "ENT_SALES_ORDER_ITEM",
-            "default_time": None,
+            "default_time": {"time_field_id": "ORDER_DATE", "time_window_id": "TIME_LAST_30D"},
             "default_filters": [],
         }
         mock_registry.get_entity_def.return_value = {
             "id": "ENT_SALES_ORDER_ITEM",
             "default_time_field_id": "ORDER_DATE",
         }
+        mock_registry.get_dimension_def.return_value = {
+            "id": "ORDER_DATE",
+            "column": "order_date"
+        }
         mock_registry.global_config = {
             "default_time_window_id": "TIME_DEFAULT_30D",
             "time_windows": [
-                {"id": "TIME_DEFAULT_30D", "name": "默认时间窗口（近30天）", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
+                {"id": "TIME_LAST_30D", "name": "最近30天", "template": {"type": "LAST_N", "value": 30, "unit": "DAY"}},
             ],
         }
+        mock_registry.resolve_time_window.return_value = (
+            TimeRange(type=TimeRangeType.LAST_N, value=30, unit="DAY"),
+            "最近30天"
+        )
 
-        plan = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        plan = QueryPlan(
+            intent=PlanIntent.AGG,
+            metrics=[MetricItem(id="METRIC_GMV")],
+            time_range=None,
+        )
 
+        result = await validate_and_normalize_plan(
+            plan, mock_context, mock_registry,
+            sub_query_description="最近公司总体销售额如何？"  # 包含模糊时间词
+        )
+
+        # 验证注入成功
         assert result.time_range is not None
-        assert result.time_range.type == TimeRangeType.LAST_N
-        assert result.time_range.value == 30
-        assert any("系统全局默认" in w for w in result.warnings)
+        assert any("检测到模糊时间表达" in w for w in result.warnings)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    @patch("stages.stage3_validation.get_pipeline_config")
+    async def test_non_vague_time_cue_raises_ambiguous_error(
+        self, mock_get_config, mock_registry, mock_context, mock_pipeline_config
+    ):
+        """
+        【测试目标】T3
+        验证非模糊时间意图但解析失败时抛出 AmbiguousTimeError（情况C）
+
+        【执行过程】
+        1. sub_query_description="上周公司总体销售额如何？"（包含时间词"上周"但非模糊）
+        2. plan.time_range=None（Stage2 未解析）
+        3. 调用 validate_and_normalize_plan
+
+        【预期结果】
+        1. 抛出 AmbiguousTimeError
+        2. code="AMBIGUOUS_TIME"
+        3. details 包含 sub_query_description 和 metrics
+        """
+        mock_get_config.return_value = mock_pipeline_config
+
+        mock_registry.get_metric_def.return_value = {
+            "id": "METRIC_GMV",
+            "name": "GMV",
+            "entity_id": "ENT_SALES_ORDER_ITEM",
+            "default_time": {"time_field_id": "ORDER_DATE", "time_window_id": "TIME_LAST_30D"},
+            "default_filters": [],
+        }
+        mock_registry.get_entity_def.return_value = {
+            "id": "ENT_SALES_ORDER_ITEM",
+            "default_time_field_id": "ORDER_DATE",
+        }
+
+        plan = QueryPlan(
+            intent=PlanIntent.AGG,
+            metrics=[MetricItem(id="METRIC_GMV")],
+            time_range=None,  # Stage2 未解析
+        )
+
+        with pytest.raises(AmbiguousTimeError) as exc_info:
+            await validate_and_normalize_plan(
+                plan, mock_context, mock_registry,
+                sub_query_description="上周公司总体销售额如何？"  # 非模糊时间词
+            )
+        
+        assert getattr(exc_info.value, "code", None) == "AMBIGUOUS_TIME"
+        assert "上周" in str(exc_info.value.details.get("sub_query_description", ""))
+        assert "METRIC_GMV" in exc_info.value.details.get("metrics", [])
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -864,7 +926,10 @@ class TestNormalizationAndInjection:
 
         plan = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
         with pytest.raises(ConfigurationError) as exc_info:
-            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+            await validate_and_normalize_plan(
+                plan, mock_context, mock_registry,
+                sub_query_description="最近公司总体销售额如何？"  # 模糊时间词触发注入
+            )
         assert getattr(exc_info.value, "code", None) == "CONFIGURATION_ERROR"
 
         # case B: Level1 命中但 time_window_id 无效
@@ -878,7 +943,10 @@ class TestNormalizationAndInjection:
         mock_registry.global_config = {"time_windows": []}
         plan2 = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
         with pytest.raises(ConfigurationError) as exc_info2:
-            await validate_and_normalize_plan(plan2, mock_context, mock_registry)
+            await validate_and_normalize_plan(
+                plan2, mock_context, mock_registry,
+                sub_query_description="最近公司总体销售额如何？"  # 模糊时间词触发注入
+            )
         assert getattr(exc_info2.value, "code", None) == "CONFIGURATION_ERROR"
         assert "TIME_NOT_EXIST" in str(exc_info2.value)
 
@@ -1010,7 +1078,10 @@ class TestNormalizationAndInjection:
             time_range=None,
         )
         with pytest.raises(AmbiguousTimeError) as exc_info:
-            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+            await validate_and_normalize_plan(
+                plan, mock_context, mock_registry,
+                sub_query_description="最近公司总体销售额如何？"  # 模糊时间词触发注入
+            )
         assert getattr(exc_info.value, "code", None) == "AMBIGUOUS_TIME"
         msg = str(exc_info.value)
         assert "Ambiguous" in msg or "ambiguous" in msg.lower()

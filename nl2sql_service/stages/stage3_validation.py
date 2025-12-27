@@ -5,6 +5,7 @@ Stage 3: Validation and Normalization (验证与规范化)
 对应详细设计文档 3.3 的定义。
 """
 import json
+import re
 import time
 from typing import Dict, List, Optional, Set, Any
 
@@ -23,6 +24,79 @@ from schemas.request import RequestContext
 from utils.log_manager import get_logger
 
 logger = get_logger(__name__)
+
+
+# ============================================================
+# 时间意图检测辅助函数
+# ============================================================
+def _has_vague_time_cue(text: str) -> bool:
+    """
+    检测用户问题中是否包含模糊时间词（触发默认时间窗注入）。
+    
+    模糊时间词列表（唯一权威）：
+    最近、目前、当前、现阶段、近期、这段时间、这阵子、近来、近日、
+    近段时间、近一段时间、最近一段时间、最近这段时间、最近这阵子、
+    近些天、最近几天、近几天
+    """
+    if not text:
+        return False
+    
+    vague_time_keywords = [
+        "最近", "目前", "当前", "现阶段", "近期",
+        "这段时间", "这阵子", "近来", "近日",
+        "近段时间", "近一段时间", "最近一段时间",
+        "最近这段时间", "最近这阵子", "近些天",
+        "最近几天", "近几天"
+    ]
+    
+    return any(keyword in text for keyword in vague_time_keywords)
+
+
+def _has_any_time_cue(text: str) -> bool:
+    """
+    检测用户问题中是否包含任何时间意图（但不属于模糊时间词）。
+    
+    用于判断"用户表达了时间意图但不属于模糊词"的场景，此时应抛出 AmbiguousTimeError。
+    
+    检测规则（保守）：
+    - 包含关键词：上周、本周、下周、本月、上月、今年、去年、季度、Q1/Q2/Q3/Q4、昨天、今天、明天
+    - 匹配正则：近\d+天|近\d+月|过去\d+天|过去\d+月|最近\d+天
+    - 匹配日期形态：20\d{2}[-/年]\d{1,2}([-/月]\d{1,2})?
+    """
+    if not text:
+        return False
+    
+    # 关键词检测
+    time_keywords = [
+        "上周", "本周", "下周", "本月", "上月",
+        "今年", "去年", "季度",
+        "Q1", "Q2", "Q3", "Q4",
+        "昨天", "今天", "明天"
+    ]
+    
+    if any(keyword in text for keyword in time_keywords):
+        return True
+    
+    # 正则检测：近N天/月、过去N天/月、最近N天
+    time_patterns = [
+        r"近\d+天",
+        r"近\d+月",
+        r"过去\d+天",
+        r"过去\d+月",
+        r"最近\d+天",
+        r"最近\d+月"
+    ]
+    
+    for pattern in time_patterns:
+        if re.search(pattern, text):
+            return True
+    
+    # 日期形态检测：2024-01-15、2024/01/15、2024年1月15日等
+    date_pattern = r"20\d{2}[-/年]\d{1,2}([-/月]\d{1,2})?"
+    if re.search(date_pattern, text):
+        return True
+    
+    return False
 
 
 # ============================================================
@@ -217,9 +291,19 @@ def _compute_metric_time_candidate(
     }
 
 
-def _inject_time_window_if_needed(plan: QueryPlan, plan_dict: Dict[str, Any], registry: SemanticRegistry) -> None:
+def _inject_time_window_if_needed(
+    plan: QueryPlan,
+    plan_dict: Dict[str, Any],
+    registry: SemanticRegistry,
+    sub_query_description: Optional[str] = None
+) -> None:
     """
-    步骤四 子步骤1：时间窗口补全 Time Window Injection（严格按最终设计 0~4）。
+    步骤四 子步骤1：时间窗口补全 Time Window Injection（条件化注入）。
+    
+    逻辑分支：
+    A) 用户完全没提时间（无任何时间意图）：不注入，保持 time_range=null，warnings="全量历史"
+    B) 用户提到模糊时间词（如"最近"）：注入默认时间窗（走旧版逻辑）
+    C) 用户提到时间但非模糊词（如"上周"）且 Stage2 未解析：raise AmbiguousTimeError
     """
     # 0) 检查 time_range 字段是否已明确设置
     # 关键修复：区分"字段存在且值为 None"（明确不要时间过滤）和"字段不存在或为 None"（需要补全）
@@ -234,8 +318,47 @@ def _inject_time_window_if_needed(plan: QueryPlan, plan_dict: Dict[str, Any], re
     if not plan.metrics:
         logger.debug("No metrics in plan, skipping time window injection")
         return
+    
+    # 【条件化注入逻辑】基于用户问题中的时间意图决定是否注入
+    text = (sub_query_description or "").strip()
+    
+    # 情况 B：用户提到模糊时间词（如"最近"） -> 走旧版注入逻辑
+    if _has_vague_time_cue(text):
+        logger.debug(
+            "Vague time cue detected, will inject default time window",
+            extra={"sub_query_description": text}
+        )
+        # 继续执行下面的旧版注入逻辑（多指标冲突检测 + 单指标注入）
+    
+    # 情况 C：用户提到时间但非模糊词（如"上周"）且 Stage2 未解析 -> 抛出 AmbiguousTimeError
+    elif _has_any_time_cue(text):
+        logger.warning(
+            "Time cue detected but not vague and time_range is missing",
+            extra={
+                "sub_query_description": text,
+                "metrics": [m.id for m in plan.metrics]
+            }
+        )
+        raise AmbiguousTimeError(
+            "Time expression detected but cannot parse time range",
+            details={
+                "sub_query_description": text,
+                "metrics": [m.id for m in plan.metrics],
+                "reason": "TIME_CUE_DETECTED_BUT_NOT_VAGUE_AND_TIME_RANGE_MISSING"
+            }
+        )
+    
+    # 情况 A：完全没提时间 -> 不注入，保持 time_range=null
+    else:
+        logger.debug(
+            "Time range not specified and no time cue detected, querying full history without time filter",
+            extra={"sub_query_description": text}
+        )
+        plan_dict["warnings"].append("未指定时间，默认查询全量历史数据")
+        return
 
     # 3) 多指标冲突检测：仅当 metrics > 1 且用户未指定 time_range 时执行
+    # 【注意】只有情况 B（模糊时间词）才会执行到这里
     if len(plan.metrics) > 1:
         candidates = []
         for m in plan.metrics:
@@ -294,11 +417,11 @@ def _inject_time_window_if_needed(plan: QueryPlan, plan_dict: Dict[str, Any], re
         # 4) warnings：仅当用户未指定时间而系统做了补全时追加
         if primary["level"] == "METRIC_DEFAULT":
             plan_dict["warnings"].append(
-                f"未指定时间，已按主指标 '{primary['metric_name']}' 的默认配置（{primary['time_desc']}）展示数据"
+                f"检测到模糊时间表达，已按主指标 '{primary['metric_name']}' 的默认配置（{primary['time_desc']}）展示数据"
             )
         else:
             plan_dict["warnings"].append(
-                f"未指定时间且指标未配置默认时间，已按系统全局默认（{primary['time_desc']}）展示数据"
+                f"检测到模糊时间表达，已按系统全局默认（{primary['time_desc']}）展示数据"
             )
         return
 
@@ -331,11 +454,11 @@ def _inject_time_window_if_needed(plan: QueryPlan, plan_dict: Dict[str, Any], re
 
     if primary["level"] == "METRIC_DEFAULT":
         plan_dict["warnings"].append(
-            f"未指定时间，已按主指标 '{primary['metric_name']}' 的默认配置（{primary['time_desc']}）展示数据"
+            f"检测到模糊时间表达，已按主指标 '{primary['metric_name']}' 的默认配置（{primary['time_desc']}）展示数据"
         )
     else:
         plan_dict["warnings"].append(
-            f"未指定时间且指标未配置默认时间，已按系统全局默认（{primary['time_desc']}）展示数据"
+            f"检测到模糊时间表达，已按系统全局默认（{primary['time_desc']}）展示数据"
         )
 
 
@@ -378,7 +501,8 @@ async def validate_and_normalize_plan(
     context: RequestContext,
     registry: SemanticRegistry,
     *,
-    sub_query_id: Optional[str] = None
+    sub_query_id: Optional[str] = None,
+    sub_query_description: Optional[str] = None
 ) -> QueryPlan:
     """
     验证和规范化查询计划
@@ -579,7 +703,7 @@ async def validate_and_normalize_plan(
     # Checkpoint 4: Normalization & Injection (规范化与注入)
     # Time Window
     try:
-        _inject_time_window_if_needed(plan, plan_dict, registry)
+        _inject_time_window_if_needed(plan, plan_dict, registry, sub_query_description=sub_query_description)
     except (AmbiguousTimeError, ConfigurationError):
         # 按设计：一旦进入 AMBIGUOUS_TIME / CONFIGURATION_ERROR，不写入 time_range，不追加 time 补全 warnings
         raise

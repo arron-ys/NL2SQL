@@ -17,7 +17,7 @@ from pypika import (
     functions as fn
 )
 from pypika.dialects import MySQLQuery, PostgreSQLQuery
-from pypika.terms import Term
+from pypika.terms import Term, ValueWrapper
 
 from core.dialect_adapter import DialectAdapter
 from core.semantic_registry import SemanticRegistry
@@ -397,11 +397,11 @@ async def generate_sql(
                     dim_expr = fn.Date(col_field)
                 elif grain == "MONTH":
                     # DATE_FORMAT(order_date, '%Y-%m-01')
-                    date_format_func = CustomFunction("DATE_FORMAT", [col_field, "%Y-%m-01"])
-                    dim_expr = date_format_func
+                    DATE_FORMAT = CustomFunction("DATE_FORMAT", ["date", "format"])
+                    dim_expr = DATE_FORMAT(col_field, ValueWrapper("%Y-%m-01"))
                 elif grain == "YEAR":
-                    date_format_func = CustomFunction("DATE_FORMAT", [col_field, "%Y-01-01"])
-                    dim_expr = date_format_func
+                    DATE_FORMAT = CustomFunction("DATE_FORMAT", ["date", "format"])
+                    dim_expr = DATE_FORMAT(col_field, ValueWrapper("%Y-01-01"))
                 elif grain == "WEEK":
                     # DATE_SUB(order_date, INTERVAL WEEKDAY(order_date) DAY)
                     # 这是一个复杂的表达式，使用 CustomCriterion
@@ -425,8 +425,8 @@ async def generate_sql(
             else:
                 # PostgreSQL: 使用 DATE_TRUNC 函数
                 # DATE_TRUNC('day', order_date)
-                date_trunc_func = CustomFunction("DATE_TRUNC", [grain.lower(), col_field])
-                dim_expr = date_trunc_func
+                DATE_TRUNC = CustomFunction("DATE_TRUNC", ["precision", "date"])
+                dim_expr = DATE_TRUNC(ValueWrapper(grain.lower()), col_field)
         else:
             dim_expr = col_field
         
@@ -516,9 +516,76 @@ async def generate_sql(
         
         # 检查是否是逻辑过滤器（LF_*）
         if filter_id.startswith("LF_"):
-            # 逻辑过滤器在后端处理，这里跳过
-            # 或者可以从 registry 获取逻辑过滤器的 SQL
-            logger.debug(f"Skipping logical filter {filter_id} (handled by backend)")
+            # 【改动2】展开逻辑过滤器为真实 SQL WHERE 条件
+            logical_filter_def = registry.get_logical_filter_def(filter_id)
+            if not logical_filter_def:
+                logger.warning(f"Logical filter definition not found: {filter_id}, skipping")
+                continue
+            
+            # 获取逻辑过滤器的 filters 列表
+            sub_filters = logical_filter_def.get("filters", [])
+            if not isinstance(sub_filters, list):
+                logger.warning(f"Logical filter {filter_id} has invalid filters structure, skipping")
+                continue
+            
+            # 展开每个子过滤器
+            for sub_filter in sub_filters:
+                if not isinstance(sub_filter, dict):
+                    continue
+                
+                target_id = sub_filter.get("target_id")
+                operator = sub_filter.get("operator")
+                value_set_id = sub_filter.get("value_set_id")
+                raw_sql = sub_filter.get("sql")
+                
+                # 处理 IN_SET 操作符（最常见的逻辑过滤器类型）
+                if operator == "IN_SET" and target_id and value_set_id:
+                    # 获取目标维度定义
+                    target_def = registry.get_dimension_def(target_id)
+                    if not target_def:
+                        logger.warning(f"Target dimension not found for logical filter: {target_id}, skipping")
+                        continue
+                    
+                    # 获取列名
+                    col_name = target_def.get("column")
+                    if not col_name:
+                        logger.warning(f"Target dimension {target_id} has no column, skipping")
+                        continue
+                    
+                    # 获取枚举值集合
+                    enum_values = registry.get_enum_values(value_set_id)
+                    if not enum_values:
+                        logger.warning(f"Enum values not found: {value_set_id}, skipping")
+                        continue
+                    
+                    # 构建 IN 条件
+                    target_field = Field(col_name, table=table)
+                    criterion = target_field.isin(enum_values)
+                    where_criteria.append(criterion)
+                    
+                    logger.debug(
+                        f"Expanded logical filter {filter_id}: {col_name} IN {enum_values}",
+                        extra={
+                            "logical_filter_id": filter_id,
+                            "target_id": target_id,
+                            "column": col_name,
+                            "value_set_id": value_set_id,
+                            "values": enum_values
+                        }
+                    )
+                
+                # 处理 RAW_SQL 类型（直接使用 SQL 片段）
+                elif operator == "RAW_SQL" and raw_sql:
+                    raw_criterion = CustomCriterion(raw_sql)
+                    where_criteria.append(raw_criterion)
+                    logger.debug(f"Added RAW_SQL from logical filter {filter_id}: {raw_sql}")
+                
+                else:
+                    logger.warning(
+                        f"Unsupported logical filter operator: {operator} in {filter_id}",
+                        extra={"sub_filter": sub_filter}
+                    )
+            
             continue
         
         # 获取过滤器对象的定义（可能是维度或指标）

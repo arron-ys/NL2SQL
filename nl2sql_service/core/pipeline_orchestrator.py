@@ -156,7 +156,8 @@ async def _process_single_subquery(
                 plan=plan,
                 context=context,
                 registry=registry,
-                sub_query_id=sub_query.id
+                sub_query_id=sub_query.id,
+                sub_query_description=sub_query.description
             )
         except Exception as e:
             logger.error(

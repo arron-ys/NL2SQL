@@ -370,6 +370,10 @@ class SemanticRegistry:
         self._security_policies = yaml_data.get("security", {}) if isinstance(yaml_data.get("security", {}), dict) else {}
         self._rebuild_security_indexes()
         
+        # 提取 enums 和 logical_filters（用于 Stage4 逻辑过滤器展开）
+        self._enums = yaml_data.get("enums", [])
+        self._logical_filters = yaml_data.get("logical_filters", [])
+        
         # 处理 metrics
         metrics = yaml_data.get("metrics", [])
         for metric in metrics:
@@ -886,6 +890,44 @@ class SemanticRegistry:
         term = self.get_term(entity_id)
         if term and term.get("type") == "ENTITY":
             return term
+        return None
+    
+    def get_logical_filter_def(self, logical_filter_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取逻辑过滤器定义（用于 Stage4 展开为 SQL WHERE 条件）
+        
+        Args:
+            logical_filter_id: 逻辑过滤器 ID（如 LF_REVENUE_VALID_ORDER）
+        
+        Returns:
+            Optional[Dict[str, Any]]: 逻辑过滤器定义，包含 filters 列表
+        """
+        if not hasattr(self, '_logical_filters') or not isinstance(self._logical_filters, list):
+            return None
+        
+        for lf in self._logical_filters:
+            if isinstance(lf, dict) and lf.get("id") == logical_filter_id:
+                return lf
+        return None
+    
+    def get_enum_values(self, enum_id: str) -> Optional[List[str]]:
+        """
+        获取枚举值集合（用于 IN_SET 操作符展开）
+        
+        Args:
+            enum_id: 枚举 ID（如 STATUS_VALID_FOR_REVENUE）
+        
+        Returns:
+            Optional[List[str]]: 枚举值列表，如 ["Resolved", "Shipped"]
+        """
+        if not hasattr(self, '_enums') or not isinstance(self._enums, list):
+            return None
+        
+        for enum_def in self._enums:
+            if isinstance(enum_def, dict) and enum_def.get("id") == enum_id:
+                values = enum_def.get("values")
+                if isinstance(values, list):
+                    return values
         return None
     
     def get_relation(self, from_entity: str, to_entity: str) -> Optional[Dict[str, Any]]:

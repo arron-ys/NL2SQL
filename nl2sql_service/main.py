@@ -1096,7 +1096,8 @@ async def generate_plan(
             plan=plan,
             context=query_desc.request_context,
             registry=registry,
-            sub_query_id=first_sub_query.id
+            sub_query_id=first_sub_query.id,
+            sub_query_description=first_sub_query.description
         )
         stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
         
@@ -1219,7 +1220,7 @@ async def generate_sql_from_plan(
         db_type = request.db_type if request.db_type else config.db_type.value
         
         # Stage 4: SQL Generation（不使用 LLM）
-        sql = await stage4_sql_gen.generate_sql(
+        sql_string, diag_ctx = await stage4_sql_gen.generate_sql(
             plan=request.plan,
             context=request.request_context,
             registry=registry,
@@ -1231,12 +1232,12 @@ async def generate_sql_from_plan(
             "SQL generation completed successfully",
             extra={
                 "request_id": actual_request_id,
-                "sql_length": len(sql),
+                "sql_length": len(sql_string),
                 "db_type": db_type
             }
         )
         
-        return {"sql": sql}
+        return {"sql": sql_string}
     
     except AppError:
         # AppError 必须自然传播，交给 app_error_handler 输出统一结构
@@ -1371,7 +1372,8 @@ async def _execute_with_debug(
                 plan=plan,
                 context=query_desc.request_context,
                 registry=registry,
-                sub_query_id=sub_query.id
+                sub_query_id=sub_query.id,
+                sub_query_description=sub_query.description
             )
             stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
             validated_plans.append(validated_plan.model_dump())
@@ -1417,7 +1419,7 @@ async def _execute_with_debug(
             config = get_pipeline_config()
             db_type = config.db_type.value
             
-            sql = await stage4_sql_gen.generate_sql(
+            sql_string, diag_ctx = await stage4_sql_gen.generate_sql(
                 plan=validated_plan,
                 context=query_desc.request_context,
                 registry=registry,
@@ -1425,14 +1427,14 @@ async def _execute_with_debug(
                 sub_query_id=sub_query.id
             )
             stage4_ms = int((time.perf_counter() - stage4_start) * 1000)
-            sql_queries.append(sql)
+            sql_queries.append(sql_string)
             
             logger.info(
                 "Stage 4 completed (debug mode)",
                 extra={
                     "request_id": request_id,
                     "sub_query_id": sub_query.id,
-                    "sql_length": len(sql),
+                    "sql_length": len(sql_string),
                     "stage4_ms": stage4_ms,
                 }
             )
@@ -1441,7 +1443,7 @@ async def _execute_with_debug(
                 extra={
                     "request_id": request_id,
                     "sub_query_id": sub_query.id,
-                    "sql": sql,
+                    "sql": sql_string,
                 },
             )
             
@@ -1456,7 +1458,7 @@ async def _execute_with_debug(
             )
             
             result = await stage5_execution.execute_sql(
-                sql=sql,
+                sql=sql_string,
                 context=query_desc.request_context,
                 db_type=db_type,
                 sub_query_id=sub_query.id
@@ -1494,6 +1496,12 @@ async def _execute_with_debug(
         except Exception as e:
             # 如果某个阶段失败，创建错误结果
             subquery_ms = int((time.perf_counter() - subquery_start) * 1000)
+            
+            # EVIDENCE: 打印完整 traceback 用于取证
+            logger.exception(
+                f"[EVIDENCE] Sub-query failed with traceback | request_id={request_id} | sub_query_id={sub_query.id}"
+            )
+            
             logger.opt(exception=e).error(
                 "Sub-query failed in debug mode",
                 extra={
