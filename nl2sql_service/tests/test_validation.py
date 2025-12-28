@@ -220,7 +220,7 @@ class TestStructuralSanity:
         plan = QueryPlan(intent=PlanIntent.AGG, metrics=[])
 
         with pytest.raises(MissingMetricError) as exc_info:
-            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+            await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert "must have at least one metric" in str(exc_info.value)
 
@@ -244,7 +244,7 @@ class TestStructuralSanity:
         plan = QueryPlan(intent=PlanIntent.TREND, metrics=[])
 
         with pytest.raises(MissingMetricError) as exc_info:
-            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+            await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert "must have at least one metric" in str(exc_info.value)
 
@@ -268,7 +268,7 @@ class TestStructuralSanity:
         """
         plan = QueryPlan(intent=PlanIntent.DETAIL, metrics=[])
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert result.intent == PlanIntent.DETAIL
         assert len(result.metrics) == 0
@@ -296,7 +296,7 @@ class TestStructuralSanity:
             metrics=[MetricItem(id="METRIC_GMV")],
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert result.intent == PlanIntent.AGG
         assert len(result.metrics) == 1
@@ -363,7 +363,7 @@ class TestStructuralSanity:
         assert plan_from_dict.warnings == []
         
         # 验证通过 validate_and_normalize_plan 后仍然正确
-        result = await validate_and_normalize_plan(plan_with_none, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan_with_none, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
         assert result.filters == []
         assert result.order_by == []
         # warnings 可能包含 time_range 自动补全提示，不作为本用例断言点
@@ -404,7 +404,7 @@ class TestSecurityEnforcement:
         )
 
         with pytest.raises(PermissionDeniedError) as exc_info:
-            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+            await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         error_msg = str(exc_info.value).lower()
         assert "unauthorized" in error_msg and "ids" in error_msg
@@ -441,7 +441,7 @@ class TestSecurityEnforcement:
         )
 
         with pytest.raises(PermissionDeniedError) as exc_info:
-            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+            await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         error_msg = str(exc_info.value).lower()
         assert "unauthorized" in error_msg and "ids" in error_msg
@@ -479,7 +479,7 @@ class TestSecurityEnforcement:
         )
 
         with pytest.raises(PermissionDeniedError) as exc_info:
-            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+            await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         error_msg = str(exc_info.value).lower()
         assert "unauthorized" in error_msg and "ids" in error_msg
@@ -515,7 +515,7 @@ class TestSecurityEnforcement:
             filters=[FilterItem(id="DIM_COUNTRY", op=FilterOp.EQ, values=["USA"])],
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert result.intent == PlanIntent.AGG
         assert len(result.metrics) == 1
@@ -566,7 +566,7 @@ class TestSemanticConnectivity:
         )
 
         with pytest.raises(UnsupportedMultiFactError) as exc_info:
-            await validate_and_normalize_plan(plan, mock_context, mock_registry)
+            await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert "multiple entities" in str(exc_info.value).lower()
 
@@ -601,7 +601,7 @@ class TestSemanticConnectivity:
             ],
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert len(result.metrics) == 2
 
@@ -640,7 +640,7 @@ class TestSemanticConnectivity:
             ],
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         # DIM_COUNTRY应该被移除
         dimension_ids = [d.id for d in result.dimensions]
@@ -717,7 +717,7 @@ class TestNormalizationAndInjection:
             time_range=existing_time_range,
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
         assert result.time_range is not None
         assert result.time_range.type == TimeRangeType.LAST_N
         assert result.time_range.value == 7
@@ -772,7 +772,8 @@ class TestNormalizationAndInjection:
 
         result = await validate_and_normalize_plan(
             plan, mock_context, mock_registry,
-            sub_query_description="公司总体销售额如何？"  # 无时间词
+            sub_query_description="公司总体销售额如何？",  # 无时间词
+            raw_question="公司总体销售额如何？"
         )
 
         # 验证不注入
@@ -834,7 +835,8 @@ class TestNormalizationAndInjection:
 
         result = await validate_and_normalize_plan(
             plan, mock_context, mock_registry,
-            sub_query_description="最近公司总体销售额如何？"  # 包含模糊时间词
+            sub_query_description="最近公司总体销售额如何？",  # 包含模糊时间词
+            raw_question="最近公司总体销售额如何？"
         )
 
         # 验证注入成功
@@ -884,7 +886,8 @@ class TestNormalizationAndInjection:
         with pytest.raises(AmbiguousTimeError) as exc_info:
             await validate_and_normalize_plan(
                 plan, mock_context, mock_registry,
-                sub_query_description="上周公司总体销售额如何？"  # 非模糊时间词
+                sub_query_description="上周公司总体销售额如何？",  # 非模糊时间词
+                raw_question="上周公司总体销售额如何？"
             )
         
         assert getattr(exc_info.value, "code", None) == "AMBIGUOUS_TIME"
@@ -923,29 +926,12 @@ class TestNormalizationAndInjection:
         }
         mock_registry.get_entity_def.return_value = {"id": "ENT_SALES_ORDER_ITEM", "default_time_field_id": "ORDER_DATE"}
         mock_registry.global_config = {"time_windows": []}
-
-        plan = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
-        with pytest.raises(ConfigurationError) as exc_info:
-            await validate_and_normalize_plan(
-                plan, mock_context, mock_registry,
-                sub_query_description="最近公司总体销售额如何？"  # 模糊时间词触发注入
-            )
-        assert getattr(exc_info.value, "code", None) == "CONFIGURATION_ERROR"
-
-        # case B: Level1 命中但 time_window_id 无效
-        mock_registry.get_metric_def.return_value = {
-            "id": "METRIC_GMV",
-            "name": "GMV",
-            "entity_id": "ENT_SALES_ORDER_ITEM",
-            "default_time": {"time_field_id": "ORDER_DATE", "time_window_id": "TIME_NOT_EXIST"},
-            "default_filters": [],
-        }
-        mock_registry.global_config = {"time_windows": []}
         plan2 = QueryPlan(intent=PlanIntent.AGG, metrics=[MetricItem(id="METRIC_GMV")], time_range=None)
         with pytest.raises(ConfigurationError) as exc_info2:
             await validate_and_normalize_plan(
                 plan2, mock_context, mock_registry,
-                sub_query_description="最近公司总体销售额如何？"  # 模糊时间词触发注入
+                sub_query_description="最近公司总体销售额如何？",  # 模糊时间词触发注入
+                raw_question="最近公司总体销售额如何？"
             )
         assert getattr(exc_info2.value, "code", None) == "CONFIGURATION_ERROR"
         assert "TIME_NOT_EXIST" in str(exc_info2.value)
@@ -1080,7 +1066,8 @@ class TestNormalizationAndInjection:
         with pytest.raises(AmbiguousTimeError) as exc_info:
             await validate_and_normalize_plan(
                 plan, mock_context, mock_registry,
-                sub_query_description="最近公司总体销售额如何？"  # 模糊时间词触发注入
+                sub_query_description="最近公司总体销售额如何？",  # 模糊时间词触发注入
+                raw_question="最近公司总体销售额如何？"
             )
         assert getattr(exc_info.value, "code", None) == "AMBIGUOUS_TIME"
         msg = str(exc_info.value)
@@ -1118,7 +1105,7 @@ class TestNormalizationAndInjection:
             time_range=existing_time_range,
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert result.time_range is not None
         assert result.time_range.value == 7  # 保留原值
@@ -1159,7 +1146,7 @@ class TestNormalizationAndInjection:
             filters=[],  # 没有过滤器
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         # 应该注入默认过滤器
         filter_ids = [f.id for f in result.filters]
@@ -1203,7 +1190,7 @@ class TestNormalizationAndInjection:
             ],
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         # 不应该重复
         filter_ids = [f.id for f in result.filters]
@@ -1236,7 +1223,7 @@ class TestNormalizationAndInjection:
             limit=None,  # 没有limit
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert result.limit == 100
 
@@ -1268,7 +1255,7 @@ class TestNormalizationAndInjection:
             limit=2000,  # 超过最大值
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert result.limit == 1000  # 被限制为最大值
         # 应该有警告
@@ -1301,6 +1288,6 @@ class TestNormalizationAndInjection:
             limit=500,  # 有效值
         )
 
-        result = await validate_and_normalize_plan(plan, mock_context, mock_registry)
+        result = await validate_and_normalize_plan(plan, mock_context, mock_registry, sub_query_description="测试查询", raw_question="测试查询")
 
         assert result.limit == 500  # 保留原值

@@ -202,7 +202,7 @@ async def _generate_synthesized_insight(
     
     # 格式化提示模板
     formatted_prompt = PROMPT_DATA_INSIGHT.format(
-        original_question=original_question,
+        raw_question=original_question,
         context_summary="（当前查询无额外业务上下文）",  # 添加缺失的参数
         query_result_data=query_result_markdown,
         execution_latency_ms=total_latency_ms,
@@ -383,7 +383,7 @@ async def _handle_all_failed(
         try:
             uncertain_info = f"权限不足：{error_msg}"
             formatted_prompt = PROMPT_CLARIFICATION.format(
-                original_question=original_question,
+                raw_question=original_question,
                 uncertain_information=uncertain_info
             )
             

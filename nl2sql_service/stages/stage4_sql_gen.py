@@ -12,6 +12,7 @@ from pypika import (
     Criterion,
     CustomFunction,
     Field,
+    Order,
     Query,
     Table,
     functions as fn
@@ -458,57 +459,66 @@ async def generate_sql(
     
     # 时间范围过滤
     if plan.time_range:
-        # 获取时间字段
-        # 优先从 metric 获取，其次从 entity 获取
-        time_field_id = None
-        
-        if plan.metrics:
-            # 有 metrics：优先使用第一个 metric 的 default_time 配置
-            primary_metric_def = registry.get_metric_def(plan.metrics[0].id)
-            if primary_metric_def:
-                time_field_id = primary_metric_def.get("default_time", {}).get("time_field_id")
-        
-        if not time_field_id:
-            # 降级：从实体获取默认时间字段（适用于 DETAIL 查询或 metric 无配置的情况）
-            time_field_id = entity_def.get("default_time_field_id")
-        
-        if time_field_id:
-            # 获取时间字段的列名
-            # 注意：time_field_id 可能是维度 ID（如 "DIM_ORDER_DATE"）
-            # 或者直接是字段名（如 "ORDER_DATE"）
-            time_dim_def = registry.get_dimension_def(time_field_id)
-            if time_dim_def:
-                time_col_name = time_dim_def.get("column")
-            else:
-                # 假设 time_field_id 就是列名
-                time_col_name = time_field_id.lower()
-            
-            time_field = Field(time_col_name, table=table)
-            
-            # 计算时间范围边界
-            start_date, end_date = _calculate_time_range_bounds(
-                plan.time_range,
-                context.current_date
-            )
-            
-            if start_date:
-                where_criteria.append(time_field >= start_date)
-            if end_date:
-                where_criteria.append(time_field <= end_date)
-            
-            # 更新诊断上下文
-            diag_ctx["time_field"] = time_col_name
-            diag_ctx["time_start"] = start_date
-            diag_ctx["time_end"] = end_date
-            
+        # 检查是否为 ALL_TIME 类型：直接跳过时间过滤
+        if plan.time_range.type == TimeRangeType.ALL_TIME:
             logger.debug(
-                "Added time range filter",
-                extra={
-                    "time_field": time_col_name,
-                    "start": start_date,
-                    "end": end_date
-                }
+                "TimeRangeType.ALL_TIME detected, skipping time WHERE clause injection",
+                extra={"time_range_type": "ALL_TIME"}
             )
+            # 不注入任何时间过滤条件，直接跳过
+        else:
+            # LAST_N 或 ABSOLUTE：执行原有逻辑
+            # 获取时间字段
+            # 优先从 metric 获取，其次从 entity 获取
+            time_field_id = None
+            
+            if plan.metrics:
+                # 有 metrics：优先使用第一个 metric 的 default_time 配置
+                primary_metric_def = registry.get_metric_def(plan.metrics[0].id)
+                if primary_metric_def:
+                    time_field_id = primary_metric_def.get("default_time", {}).get("time_field_id")
+            
+            if not time_field_id:
+                # 降级：从实体获取默认时间字段（适用于 DETAIL 查询或 metric 无配置的情况）
+                time_field_id = entity_def.get("default_time_field_id")
+            
+            if time_field_id:
+                # 获取时间字段的列名
+                # 注意：time_field_id 可能是维度 ID（如 "DIM_ORDER_DATE"）
+                # 或者直接是字段名（如 "ORDER_DATE"）
+                time_dim_def = registry.get_dimension_def(time_field_id)
+                if time_dim_def:
+                    time_col_name = time_dim_def.get("column")
+                else:
+                    # 假设 time_field_id 就是列名
+                    time_col_name = time_field_id.lower()
+                
+                time_field = Field(time_col_name, table=table)
+                
+                # 计算时间范围边界
+                start_date, end_date = _calculate_time_range_bounds(
+                    plan.time_range,
+                    context.current_date
+                )
+                
+                if start_date:
+                    where_criteria.append(time_field >= start_date)
+                if end_date:
+                    where_criteria.append(time_field <= end_date)
+                
+                # 更新诊断上下文
+                diag_ctx["time_field"] = time_col_name
+                diag_ctx["time_start"] = start_date
+                diag_ctx["time_end"] = end_date
+                
+                logger.debug(
+                    "Added time range filter",
+                    extra={
+                        "time_field": time_col_name,
+                        "start": start_date,
+                        "end": end_date
+                    }
+                )
     
     # 标准过滤器
     for filter_item in plan.filters:
@@ -656,9 +666,9 @@ async def generate_sql(
         
         # 添加排序
         if order_item.direction.value == "ASC":
-            query = query.orderby(order_field)
+            query = query.orderby(order_field, order=Order.asc)
         else:
-            query = query.orderby(order_field, order=Query.Order.desc)
+            query = query.orderby(order_field, order=Order.desc)
     
     # LIMIT 子句
     if plan.limit:

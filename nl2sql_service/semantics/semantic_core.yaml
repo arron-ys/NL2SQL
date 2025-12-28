@@ -63,6 +63,7 @@ dimensions:
     is_time_dimension: true
     time_field_id: "ORDER_DATE"
     allowed_time_grains: ["DAY", "WEEK", "MONTH", "QUARTER", "YEAR"]
+    default_time_grain: "DAY"
 
   - id: "DIM_REQUIRED_DATE"
     name: "要求交付日期"
@@ -73,6 +74,8 @@ dimensions:
     column: "required_date"
     is_time_dimension: true
     time_field_id: "REQUIRED_DATE"
+    allowed_time_grains: ["DAY", "MONTH", "YEAR"]
+    default_time_grain: "DAY"
 
   - id: "DIM_SHIPPED_DATE"
     name: "发货日期"
@@ -83,6 +86,8 @@ dimensions:
     column: "shipped_date"
     is_time_dimension: true
     time_field_id: "SHIPPED_DATE"
+    allowed_time_grains: ["DAY", "MONTH", "YEAR"]
+    default_time_grain: "DAY"
 
   - id: "DIM_ORDER_STATUS"
     name: "订单状态"
@@ -263,6 +268,8 @@ dimensions:
     column: "hire_date"
     is_time_dimension: true
     time_field_id: "HIRE_DATE"
+    allowed_time_grains: ["DAY", "MONTH", "YEAR"]
+    default_time_grain: "DAY"
 
   - id: "DIM_EMPLOYMENT_STATUS"
     name: "员工状态"

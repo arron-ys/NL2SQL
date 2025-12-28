@@ -85,6 +85,7 @@ class SemanticRegistry:
         # 内存存储
         self.metadata_map: Dict[str, Any] = {}  # ID -> 定义对象
         self.keyword_index: Dict[str, List[str]] = {}  # Name/Alias -> [ID, ...]
+        self._time_field_to_dim_id: Dict[str, str] = {}  # time_field_id -> dimension_id (唯一映射)
         
         # 向量数据库客户端
         self.qdrant_client: Optional[AsyncQdrantClient] = None
@@ -362,6 +363,7 @@ class SemanticRegistry:
         """
         self.metadata_map.clear()
         self.keyword_index.clear()
+        self._time_field_to_dim_id.clear()
         
         # 提取全局配置
         self.global_config = yaml_data.get("global_config", {})
@@ -390,6 +392,55 @@ class SemanticRegistry:
             if dim_id:
                 self.metadata_map[dim_id] = dim
                 self._add_to_keyword_index(dim_id, dim)
+        
+        # 构建 time_field_id -> dimension_id 反查索引（仅针对时间维度）
+        for dim in dimensions:
+            dim_id = dim.get("id")
+            is_time_dimension = dim.get("is_time_dimension", False)
+            time_field_id = dim.get("time_field_id")
+            
+            # 仅处理时间维度且有 time_field_id 的维度
+            if is_time_dimension and time_field_id:
+                # 检查唯一性：同一 time_field_id 不能对应多个维度
+                if time_field_id in self._time_field_to_dim_id:
+                    existing_dim_id = self._time_field_to_dim_id[time_field_id]
+                    raise SemanticConfigurationError(
+                        f"Duplicate time_field_id '{time_field_id}' found in multiple dimensions",
+                        details={
+                            "time_field_id": time_field_id,
+                            "dimension_1": existing_dim_id,
+                            "dimension_2": dim_id,
+                            "violation": "Each time_field_id must map to exactly one dimension"
+                        }
+                    )
+                self._time_field_to_dim_id[time_field_id] = dim_id
+                
+                # 校验 default_time_grain 必须在 allowed_time_grains 内
+                default_time_grain = dim.get("default_time_grain")
+                allowed_time_grains = dim.get("allowed_time_grains", [])
+                
+                if default_time_grain is not None:
+                    if not isinstance(allowed_time_grains, list) or len(allowed_time_grains) == 0:
+                        raise SemanticConfigurationError(
+                            f"Time dimension '{dim_id}' has default_time_grain but no allowed_time_grains",
+                            details={
+                                "dimension_id": dim_id,
+                                "default_time_grain": default_time_grain,
+                                "allowed_time_grains": allowed_time_grains,
+                                "violation": "Time dimension with default_time_grain must have allowed_time_grains"
+                            }
+                        )
+                    
+                    if default_time_grain not in allowed_time_grains:
+                        raise SemanticConfigurationError(
+                            f"Time dimension '{dim_id}' has invalid default_time_grain '{default_time_grain}'",
+                            details={
+                                "dimension_id": dim_id,
+                                "default_time_grain": default_time_grain,
+                                "allowed_time_grains": allowed_time_grains,
+                                "violation": "default_time_grain must be in allowed_time_grains"
+                            }
+                        )
         
         # =========================================================
         # 处理实体定义 (Entities)
@@ -876,6 +927,18 @@ class SemanticRegistry:
         if term and term.get("id", "").startswith("DIM_"):
             return term
         return None
+    
+    def resolve_dimension_id_by_time_field_id(self, time_field_id: str) -> Optional[str]:
+        """
+        通过 time_field_id 反查对应的维度 ID（用于 Stage3 TREND 注入）
+        
+        Args:
+            time_field_id: 时间字段 ID（如 "ORDER_DATE"）
+        
+        Returns:
+            Optional[str]: 对应的维度 ID（如 "DIM_ORDER_DATE"），如果不存在则返回 None
+        """
+        return self._time_field_to_dim_id.get(time_field_id)
     
     def get_entity_def(self, entity_id: str) -> Optional[Dict[str, Any]]:
         """

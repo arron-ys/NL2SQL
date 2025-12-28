@@ -212,7 +212,8 @@ async def process_request(
     # Step 5: Assemble Final Output
     query_request_description = QueryRequestDescription(
         request_context=request_context,
-        sub_queries=normalized_sub_queries
+        sub_queries=normalized_sub_queries,
+        raw_question=question
     )
     
     # 计算耗时

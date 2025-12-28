@@ -112,7 +112,8 @@ def _map_exception_to_pipeline_error(exception: Exception, stage: str) -> Pipeli
 async def _process_single_subquery(
     sub_query: SubQueryItem,
     context: RequestContext,
-    registry: SemanticRegistry
+    registry: SemanticRegistry,
+    raw_question: str
 ) -> Union[ExecutionResult, PipelineError]:
     """
     处理单个子查询的完整流水线（Stage 2-5）
@@ -137,7 +138,8 @@ async def _process_single_subquery(
             plan = await stage2_plan_generation.process_subquery(
                 sub_query=sub_query,
                 context=context,
-                registry=registry
+                registry=registry,
+                raw_question=raw_question
             )
         except Exception as e:
             logger.error(
@@ -157,7 +159,8 @@ async def _process_single_subquery(
                 context=context,
                 registry=registry,
                 sub_query_id=sub_query.id,
-                sub_query_description=sub_query.description
+                sub_query_description=sub_query.description,
+                raw_question=raw_question
             )
         except Exception as e:
             logger.error(
@@ -275,7 +278,8 @@ async def run_pipeline(
         task = _process_single_subquery(
             sub_query=sub_query,
             context=query_desc.request_context,
-            registry=registry
+            registry=registry,
+            raw_question=query_desc.raw_question
         )
         tasks.append(task)
     

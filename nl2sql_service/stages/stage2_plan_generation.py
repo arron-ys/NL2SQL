@@ -427,7 +427,8 @@ def _perform_anti_hallucination_check(
 async def process_subquery(
     sub_query: SubQueryItem,
     context: RequestContext,
-    registry: SemanticRegistry
+    registry: SemanticRegistry,
+    raw_question: str
 ) -> QueryPlan:
     """
     处理子查询，生成结构化的查询计划
@@ -451,18 +452,24 @@ async def process_subquery(
             "sub_query_id": sub_query.id,
         },
     )
-    # DEBUG：原始子查询文本与分隔符（INFO 严禁长文本/分隔符刷屏）
-    logger.debug("=" * 80)
+    # DEBUG：子查询描述与用户原始问题（INFO 严禁长文本/分隔符刷屏）
     logger.debug(
-        f"[Stage 2] 原始子查询 (Sub-Query {sub_query.id}):",
+        f"[Stage 2] 子查询描述 (Sub-Query {sub_query.id}):",
         extra={
             "sub_query_id": sub_query.id,
             "request_id": context.request_id,
-            "original_query": sub_query.description,
+            "sub_query_description": sub_query.description,
         },
     )
     logger.debug(f"  {sub_query.description}")
-    logger.debug("=" * 80)
+    logger.debug(
+        f"[Stage 2] 用户原始问题 (raw_question):",
+        extra={
+            "sub_query_id": sub_query.id,
+            "request_id": context.request_id,
+            "raw_question": raw_question,
+        },
+    )
     
     # Step 1: RAG - Security-First Hybrid Retrieval
     # 获取允许的 ID 列表（权限过滤）
@@ -767,8 +774,12 @@ async def process_subquery(
     # Step 3: LLM Prompt Generation
     current_date_str = context.current_date.strftime("%Y-%m-%d")
     
+    # Prompt 同时传入 raw_question 和 sub_query.description
+    # raw_question: 用户原始问题（用于时间意图识别）
+    # sub_query.description: 子查询描述（用于指标/维度意图识别）
     formatted_prompt = PROMPT_PLAN_GENERATION.format(
-        user_query=sub_query.description,
+        raw_question=raw_question,
+        sub_query_description=sub_query.description,
         schema_context=schema_context,
         current_date=current_date_str
     )

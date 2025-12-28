@@ -90,7 +90,7 @@ class QueryRequestDescription(BaseModel):
     
     这是整个流水线的入口数据结构，后续所有阶段都基于此结构进行处理。
     """
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
     
     request_context: RequestContext = Field(
         ...,
@@ -101,6 +101,13 @@ class QueryRequestDescription(BaseModel):
         ...,
         min_length=1,
         description="子查询列表，至少包含一个子查询"
+    )
+    
+    raw_question: str = Field(
+        ...,
+        alias="original_question",
+        serialization_alias="original_question",
+        description="用户原始问题（不可变，来自 request.question）"
     )
 
 

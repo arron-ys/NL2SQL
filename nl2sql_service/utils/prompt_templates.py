@@ -5,9 +5,9 @@ Prompt Templates Module
 基于详细设计文档附录A的定义。
 """
 # ============================================================
-# Stage 1: Sub-Query Decomposition (子查询分解)
+# Stage 1: Sub-Query Decomposition (查询分解)
 # ============================================================
-PROMPT_SUBQUERY_DECOMPOSITION = """你是一个专业的查询分解助手（Query Decomposer）。你的任务是将用户的复杂查询问题拆解为多个原子子查询。
+PROMPT_SUBQUERY_DECOMPOSITION = """你是一个专业的查询分解助手（Query Decomposer）。你的任务是将用户的复杂查询问题拆解为多个**原子子查询**。
 
 当前日期：{current_date}
 
@@ -16,36 +16,45 @@ PROMPT_SUBQUERY_DECOMPOSITION = """你是一个专业的查询分解助手（Que
 
 请将上述问题拆解为多个原子子查询。每个子查询应该是独立的、可单独执行的查询。
 
-**时间解析规则：**
-- **[首要规则]** 如果用户问题中 **没有** 包含任何与时间相关的词汇（例如："今年", "去年", "明年", "本月", "上月", "下月", "本周", "上周", "今天", "昨天", "明天", "前天", "最近", "近期", "刚刚", "现在", "当前", "过去", "未来", "2023年", "2024年", "12月", "5月", "星期三", "周五", "国庆节", "春节", "双十一", "618", "财报季", "每月", "每天", "每周", "年度", "季度", "期初", "期末", "月初", "月底", "年初", "年底"等），则在生成的 `description` 中 **严禁** 添加任何时间范围的描述。
-- 当且仅当用户使用了相对时间表达（如"今年"、"本月"、"上周"等）时，才需要根据当前日期 {current_date} 转换为具体的绝对时间。
-- 例如：如果当前日期是 2025-01-15，则"今年"应理解为"2025年"，"本月"应理解为"2025年1月"。
+**时间处理规则（必须严格遵守，违者视为错误输出）：**
+- **[职责边界]** Stage1 **不承担时间口径决策**，也**不承担时间范围解析/补全**。时间意图的权威来源是用户原始问题（raw_question），不在 Stage1 的 `description` 中做任何“时间口径改写”。
+- **[禁止行为 1] 严禁日期化模糊时间词**：以下“模糊时间词/短语”在 `description` 中**必须原样保留**，不得改写为任何具体日期/日期区间/具体天：
+  - 中文：最近、目前、当前、现阶段、近期、这段时间、这阵子、近来、近日、近段时间、近一段时间、最近一段时间、最近这段时间、最近这阵子、近些天、最近几天、近几天
+  - English: recent, recently, lately, these days, nowadays, currently, at present, in recent times, in the past period
+  - 错误示例（禁止）：用户说“最近的销售额” → description 写成“2025-01-15 的销售额” ❌
+  - 正确示例：用户说“最近的销售额” → description 仍写“最近的销售额” ✅
+- **[禁止行为 2] 严禁新增时间范围**：如果用户问题中**没有任何时间意图**，则在 `description` 中**严禁**添加任何时间范围描述（不要加“近30天/今年/本月/最近”等）。
+- **[禁止行为 3] 严禁改写任何时间表达**：即使用户提到“今年/本月/上周/昨天/2024年1月/最近30天”等，Stage1 也必须在 `description` 中**原样保留用户的时间表达**，不得转换为绝对日期、不得补齐起止边界、不得推断自然周/月/季度边界。
+  - 示例：用户说“今年销售额” → description 写“今年销售额”，不要改成“2025年销售额”。
+  - 示例：用户说“最近30天销售额” → description 写“最近30天销售额”，不要改成具体日期区间。
+- **[目的说明]** Stage1 的 `description` 只用于**指标/维度/过滤意图**的清晰化与分解，时间口径由后续阶段处理。
 
 **反幻觉规则：**
 - 只基于用户问题中明确提到的信息进行分解，不要添加用户未提及的假设。
 - 如果问题本身已经是原子查询，则只返回一个子查询。
 - 如果问题包含多个独立的问题，则拆解为多个子查询。
-- 每个子查询应该包含完整的查询意图，不依赖其他子查询的结果。
+- 每个子查询应包含完整的查询意图，不依赖其他子查询的结果。
 
 请以 JSON 格式返回结果，格式如下：
-{{
+{
   "sub_queries": [
-    {{
+    {
       "id": "sq_1",
-      "description": "第一个子查询的自然语言描述（已解析相对时间为绝对时间）"
-    }},
-    {{
+      "description": "第一个子查询的自然语言描述（注意：不得改写或补全任何时间表达）"
+    },
+    {
       "id": "sq_2",
-      "description": "第二个子查询的自然语言描述（已解析相对时间为绝对时间）"
-    }}
+      "description": "第二个子查询的自然语言描述（注意：不得改写或补全任何时间表达）"
+    }
   ]
-}}
+}
 
 **输出要求：**
 - sub_queries 必须是一个数组
 - 至少包含一个子查询
 - 每个子查询必须包含 id 和 description 字段
-- description 应该是清晰、完整的自然语言查询描述，已将所有相对时间转换为绝对时间
+- description 必须是清晰、完整的自然语言查询描述
+- description 中的时间表达：只能来自用户原话，必须原样保留，不得新增、不得改写、不得补全
 """
 
 
@@ -58,7 +67,13 @@ You are an expert Data Analyst AI. Your goal is to map the user's natural langua
 
 # Context
 - Current Date: {current_date} (Format: YYYY-MM-DD)
-- User Question: "{user_query}"
+- Raw Question: "{raw_question}"
+- Sub-Query Description: "{sub_query_description}"
+
+**CRITICAL - Time Range Authority (时间范围权威来源，必须严格遵守)：**
+- Authority: `time_range` MUST be inferred primarily from **Raw Question**.
+- Sub-Query Description is ONLY for metric/dimension/filter intent; it MUST NOT override time intent.
+- You MUST NOT infer `time_range` solely from any date text that appears in Sub-Query Description while ignoring Raw Question.
 
 # Available Schema (Retrieved Context)
 You can ONLY use the Metrics and Dimensions listed below.
@@ -86,30 +101,67 @@ You can ONLY use the Metrics and Dimensions listed below.
      - For all other dimensions, `time_grain` MUST be null.
      - **DETAIL Query Golden Rule**:
        - If the `intent` is `DETAIL`, you MUST select at least TWO dimensions:
-         1. The dimension the user explicitly asked for (e.g., `DIM_EMPLOYMENT_STATUS`).
-         2. The primary identifier dimension of the entity (e.g., `DIM_EMPLOYEE_NAME` or `DIM_EMPLOYEE_ID`).
-       - **Reason:** This is to ensure each row in the result is uniquely identifiable by the user. It is bad user experience to return a list of repeating statuses without context.
+         1. The dimension the user explicitly asked for.
+         2. The primary identifier dimension of the entity.
+       - **Reason:** This is to ensure each row in the result is uniquely identifiable by the user.
+
 3. **Filters**:
    - Put ALL filter conditions here (do not distinguish between WHERE and HAVING).
    - `id`: Must be a valid Metric ID or Dimension ID.
    - `op`: Choose from ["EQ", "NEQ", "IN", "NOT_IN", "GT", "LT", "GTE", "LTE", "BETWEEN", "LIKE"].
    - `values`: Must be a list. **Strictly keep original types**. Do NOT convert string IDs (e.g., "007") to numbers (7).
 
-4. **Time Range**:
-   - **Relative**: If user says "last 7 days", use `{{ "type": "LAST_N", "value": 7, "unit": "DAY" }}`.
-   - **Absolute**: If user says "2023-01-01 to 2023-01-31", use `{{ "type": "ABSOLUTE", "start": "2023-01-01", "end": "2023-01-31" }}`.
-     **CRITICAL**: For ABSOLUTE type, `start` and `end` must be top-level fields. Do NOT nest them inside a `value` object.
-   - **Missing**: If user mentions NO time, set `time_range` to `null`. (Do NOT guess a default time).
-   
+4. **Time Range (必须严格遵守；输出必须可被 JSON 解析)：**
+   - **Rule 0 - Precedence**:
+     - Time range decisions MUST follow the rules below in order.
+     - If multiple cues exist, choose the most explicit one.
+   - **Rule 1 - ALL_TIME (only when explicitly asked)**:
+     - If Raw Question explicitly indicates all history / no time limit:
+       - Chinese: "全量历史", "不限时间", "全部历史", "所有时间"
+       - English: "all time", "all history", "no time limit"
+     - Output: `{{ "type": "ALL_TIME" }}`
+     - MUST NOT use `null` to represent ALL_TIME.
+   - **Rule 2 - Explicit relative window with number (MUST output LAST_N)**:
+     - If Raw Question matches an explicit pattern like:
+       - Chinese: "最近/近/过去/近N天/近N周/近N个月/过去N天/过去N周/过去N个月/近N日"
+       - English: "last N days/weeks/months", "past N days/weeks/months"
+     - Output: `{{ "type": "LAST_N", "value": N, "unit": "DAY" | "WEEK" | "MONTH" }}`
+     - Examples:
+       - "最近30天的销售额" -> `{{ "type": "LAST_N", "value": 30, "unit": "DAY" }}`
+       - "last 7 days revenue" -> `{{ "type": "LAST_N", "value": 7, "unit": "DAY" }}`
+   - **Rule 3 - Vague time cue (MUST output null; let Stage3 + YAML inject defaults)**:
+     - If Raw Question contains a vague cue WITHOUT an explicit number window (Rule 2 not matched):
+       - Chinese: 最近、目前、当前、现阶段、近期、这段时间、这阵子、近来、近日、近段时间、近一段时间、最近一段时间、最近这段时间、最近这阵子、近些天、最近几天、近几天
+       - English: recent, recently, lately, these days, nowadays, currently, at present, in recent times, in the past period
+     - Output: `null`
+     - Examples:
+       - "最近的销售额" -> `null`
+       - "currently active customers" -> `null`
+   - **Rule 4 - Explicit absolute time (output ABSOLUTE)**:
+     - If Raw Question includes explicit dates or explicit date ranges that can be mapped to concrete boundaries, output:
+       - `{{ "type": "ABSOLUTE", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD" }}`
+     - Requirements:
+       - `start` and `end` MUST be top-level fields (no nested object).
+       - Use ISO date format YYYY-MM-DD.
+     - Examples:
+       - "2023-01-01 到 2023-01-31 的销售额" -> `{{ "type": "ABSOLUTE", "start": "2023-01-01", "end": "2023-01-31" }}`
+       - "2024年1月" -> map to an absolute range for that month.
+   - **Rule 5 - No time intent (output null)**:
+     - If Raw Question contains no time intent at all, output `null`.
+   - **Rule 6 - Time intent exists but cannot be resolved (output null; NOTE behavior)**:
+     - If Raw Question has time intent but boundaries cannot be determined (e.g., "之前", "前一阵", "某天/某月/某年" without context),
+       output `null` (DO NOT guess).
+     - IMPORTANT NOTE: This may trigger Stage3 to raise an ambiguity error for clarification if it detects a time cue that is not vague.
+
 5. **Order By & Limit**:
    - `order_by`: Only sort by metrics or dimensions that are selected in the query.
    - `limit`: Set to integer if user specifies (e.g., "Top 10"). Otherwise `null`.
 
 # JSON Output Format
 Return ONLY a valid JSON object matching this structure.
-**IMPORTANT:** The example below uses `//` comments to show different options. Your output must be **standard JSON** (no comments).
+**IMPORTANT:** Your output must be **standard JSON** (no comments, no trailing commas).
 
-```json
+Canonical JSON example (structure only; replace IDs/values according to the user's question and the schema context):
 {{
   "intent": "AGG",
   "metrics": [
@@ -121,23 +173,21 @@ Return ONLY a valid JSON object matching this structure.
   "filters": [
     {{ "id": "DIM_ID", "op": "EQ", "values": ["Value"] }}
   ],
-  "time_range": {{
-    // OPTION 1: Relative Time (Use this structure for "last N days")
-    "type": "LAST_N",
-    "value": 30,
-    "unit": "DAY"
-    
-    // OPTION 2: Absolute Time (Use this structure for specific dates)
-    // "type": "ABSOLUTE",
-    // "start": "2023-01-01",
-    // "end": "2023-01-31"
-  }},
+  "time_range": null,
   "order_by": [
     {{ "id": "METRIC_ID", "direction": "DESC" }}
   ],
   "limit": 100
 }}
+
+
+Valid `time_range` fragments (choose EXACTLY ONE according to the Time Range rules above):
+- null
+- {{ "type": "LAST_N", "value": 30, "unit": "DAY" }}
+- {{ "type": "ABSOLUTE", "start": "2023-01-01", "end": "2023-01-31" }}
+- {{ "type": "ALL_TIME" }}
 """
+
 
 
 # ============================================================
@@ -154,7 +204,7 @@ PROMPT_DATA_INSIGHT = """
 4. 【口径来自上下文】时间范围与单位必须来自【业务上下文】；如果业务上下文不足，请明确说明“未提供时间范围/单位信息”，不要猜。
 
 # 输入信息
-- 用户原始问题: {original_question}
+- 用户原始问题: {raw_question}
 - 业务上下文（可能为空或为占位提示）:
 {context_summary}
 - 查询结果数据（Markdown 格式）:
@@ -184,7 +234,7 @@ PROMPT_DATA_INSIGHT = """
 PROMPT_CLARIFICATION = """你是一个友好、专业的数据查询助手。当用户的查询存在歧义或信息不足时，你需要生成一个礼貌、清晰的澄清问题。
 
 用户原始问题：
-{original_question}
+{raw_question}
 
 无法确定的信息：
 {uncertain_information}

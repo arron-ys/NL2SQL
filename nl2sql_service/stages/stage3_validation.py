@@ -295,7 +295,8 @@ def _inject_time_window_if_needed(
     plan: QueryPlan,
     plan_dict: Dict[str, Any],
     registry: SemanticRegistry,
-    sub_query_description: Optional[str] = None
+    raw_question: str,
+    sub_query_description: str
 ) -> None:
     """
     步骤四 子步骤1：时间窗口补全 Time Window Injection（条件化注入）。
@@ -309,18 +310,28 @@ def _inject_time_window_if_needed(
     # 关键修复：区分"字段存在且值为 None"（明确不要时间过滤）和"字段不存在或为 None"（需要补全）
     # 如果 plan.time_range 不为 None，说明用户已指定，跳过补全
     if plan.time_range is not None:
-        logger.debug(
-            "Time range already specified, skipping injection",
-            extra={"time_range": plan.time_range.model_dump() if hasattr(plan.time_range, "model_dump") else str(plan.time_range)}
-        )
-        return
+        # 特殊处理 ALL_TIME：直接 return，不做意图检测、不注入、不追加 time warning
+        if plan.time_range.type == TimeRangeType.ALL_TIME:
+            logger.debug(
+                "TimeRangeType.ALL_TIME detected, skipping time window injection",
+                extra={"time_range_type": "ALL_TIME"}
+            )
+            return
+        # LAST_N 或 ABSOLUTE：用户显式时间，跳过注入
+        if plan.time_range.type in {TimeRangeType.LAST_N, TimeRangeType.ABSOLUTE}:
+            logger.debug(
+                "Time range already specified (LAST_N or ABSOLUTE), skipping injection",
+                extra={"time_range": plan.time_range.model_dump() if hasattr(plan.time_range, "model_dump") else str(plan.time_range)}
+            )
+            return
     
     if not plan.metrics:
         logger.debug("No metrics in plan, skipping time window injection")
         return
     
-    # 【条件化注入逻辑】基于用户问题中的时间意图决定是否注入
-    text = (sub_query_description or "").strip()
+    # 【条件化注入逻辑】基于用户原始问题中的时间意图决定是否注入
+    # 时间意图检测只使用 raw_question（不再用 sub_query_description 兆底）
+    text = raw_question.strip()
     
     # 情况 B：用户提到模糊时间词（如"最近"） -> 走旧版注入逻辑
     if _has_vague_time_cue(text):
@@ -502,7 +513,8 @@ async def validate_and_normalize_plan(
     registry: SemanticRegistry,
     *,
     sub_query_id: Optional[str] = None,
-    sub_query_description: Optional[str] = None
+    sub_query_description: str,
+    raw_question: str
 ) -> QueryPlan:
     """
     验证和规范化查询计划
@@ -703,13 +715,157 @@ async def validate_and_normalize_plan(
     # Checkpoint 4: Normalization & Injection (规范化与注入)
     # Time Window
     try:
-        _inject_time_window_if_needed(plan, plan_dict, registry, sub_query_description=sub_query_description)
+        _inject_time_window_if_needed(plan, plan_dict, registry, raw_question=raw_question, sub_query_description=sub_query_description)
     except (AmbiguousTimeError, ConfigurationError):
         # 按设计：一旦进入 AMBIGUOUS_TIME / CONFIGURATION_ERROR，不写入 time_range，不追加 time 补全 warnings
         raise
     
-    # Mandatory Filters
+    # TREND Dimension Injection (Checkpoint4 新增)
+    if plan.intent == PlanIntent.TREND:
+        # 检查 plan.dimensions 中是否已有时间维度
+        has_time_dimension = False
+        for dim_dict in plan_dict["dimensions"]:
+            dim_id = dim_dict.get("id")
+            if dim_id:
+                dim_def = registry.get_dimension_def(dim_id)
+                if dim_def and dim_def.get("is_time_dimension") == True:
+                    has_time_dimension = True
+                    break
+        
+        # 若无时间维度，注入默认时间维度
+        if not has_time_dimension:
+            # 重新计算 primary_entity_id（使用 Checkpoint3 的逻辑，确保所有 metrics entity_id 一致）
+            metric_ids = [m.id for m in plan.metrics] if plan.metrics else []
+            if not plan.metrics or len(plan.metrics) == 0:
+                raise ConfigurationError(
+                    "TREND intent requires at least one metric to determine primary entity",
+                    details={
+                        "intent": "TREND",
+                        "metric_ids": metric_ids
+                    }
+                )
+            
+            entity_ids = set()
+            for metric in plan.metrics:
+                metric_def = registry.get_metric_def(metric.id)
+                if metric_def:
+                    entity_id = metric_def.get("entity_id")
+                    if entity_id:
+                        entity_ids.add(entity_id)
+            
+            if len(entity_ids) == 0:
+                raise ConfigurationError(
+                    "TREND intent: no entity_id found in any metric definition",
+                    details={
+                        "intent": "TREND",
+                        "metric_ids": metric_ids
+                    }
+                )
+            
+            if len(entity_ids) > 1:
+                raise ConfigurationError(
+                    "TREND intent: metrics belong to multiple entities",
+                    details={
+                        "intent": "TREND",
+                        "metric_ids": metric_ids,
+                        "entity_ids": list(entity_ids)
+                    }
+                )
+            
+            primary_entity_id = list(entity_ids)[0]
+            
+            # 获取 entity_def
+            entity_def = registry.get_entity_def(primary_entity_id)
+            if not entity_def:
+                raise ConfigurationError(
+                    f"TREND intent: entity definition not found for primary_entity_id={primary_entity_id}",
+                    details={
+                        "intent": "TREND",
+                        "metric_ids": metric_ids,
+                        "primary_entity_id": primary_entity_id
+                    }
+                )
+            
+            # 获取 default_time_field_id
+            default_time_field_id = entity_def.get("default_time_field_id")
+            if not default_time_field_id:
+                raise ConfigurationError(
+                    f"TREND intent: entity '{primary_entity_id}' missing default_time_field_id",
+                    details={
+                        "intent": "TREND",
+                        "metric_ids": metric_ids,
+                        "primary_entity_id": primary_entity_id
+                    }
+                )
+            
+            # 使用 registry 反查索引获取维度 ID
+            time_dim_id = registry.resolve_dimension_id_by_time_field_id(default_time_field_id)
+            if not time_dim_id:
+                raise ConfigurationError(
+                    f"TREND intent: cannot resolve dimension_id for time_field_id={default_time_field_id}",
+                    details={
+                        "intent": "TREND",
+                        "metric_ids": metric_ids,
+                        "primary_entity_id": primary_entity_id,
+                        "default_time_field_id": default_time_field_id
+                    }
+                )
+            
+            # 获取 time_dim_def
+            time_dim_def = registry.get_dimension_def(time_dim_id)
+            if not time_dim_def:
+                raise ConfigurationError(
+                    f"TREND intent: time dimension definition not found for time_dim_id={time_dim_id}",
+                    details={
+                        "intent": "TREND",
+                        "metric_ids": metric_ids,
+                        "primary_entity_id": primary_entity_id,
+                        "default_time_field_id": default_time_field_id,
+                        "time_dim_id": time_dim_id
+                    }
+                )
+            
+            # 获取 default_time_grain
+            default_time_grain = time_dim_def.get("default_time_grain")
+            if not default_time_grain:
+                raise ConfigurationError(
+                    f"TREND intent: time dimension '{time_dim_id}' missing default_time_grain",
+                    details={
+                        "intent": "TREND",
+                        "metric_ids": metric_ids,
+                        "primary_entity_id": primary_entity_id,
+                        "default_time_field_id": default_time_field_id,
+                        "time_dim_id": time_dim_id
+                    }
+                )
+            
+            # 注入时间维度
+            from schemas.plan import DimensionItem, TimeGrain
+            injected_dim = DimensionItem(
+                id=time_dim_id,
+                time_grain=TimeGrain(default_time_grain)
+            )
+            plan_dict["dimensions"].append(injected_dim.model_dump())
+            
+            # 追加 warning
+            dim_name = time_dim_def.get("name", time_dim_id)
+            plan_dict["warnings"].append(
+                f"已自动按 '{dim_name}' 以 {default_time_grain} 粒度进行趋势统计"
+            )
+            
+            logger.debug(
+                f"Injected time dimension {time_dim_id} with grain {default_time_grain} for TREND intent",
+                extra={
+                    "dimension_id": time_dim_id,
+                    "time_grain": default_time_grain,
+                    "entity_id": primary_entity_id
+                }
+            )
+    
+    # Mandatory Filters (Checkpoint4 增强：target_id 冲突检测)
     existing_filter_ids = {f.id for f in plan.filters}
+    # 收集用户已有的 DIM_* filter IDs（用于冲突检测）
+    user_dim_filter_ids = {f.id for f in plan.filters if f.id.startswith("DIM_")}
     
     for metric in plan.metrics:
         metric_def = registry.get_metric_def(metric.id)
@@ -717,6 +873,42 @@ async def validate_and_normalize_plan(
             default_filters = metric_def.get("default_filters", [])
             for filter_id in default_filters:
                 if filter_id not in existing_filter_ids:
+                    # 检查 LF 的 target_id 冲突（用户优先）
+                    should_skip = False
+                    has_raw_sql = False
+                    
+                    if filter_id.startswith("LF_"):
+                        lf_def = registry.get_logical_filter_def(filter_id)
+                        if lf_def:
+                            sub_filters = lf_def.get("filters", [])
+                            for sub_filter in sub_filters:
+                                if not isinstance(sub_filter, dict):
+                                    continue
+                                
+                                target_id = sub_filter.get("target_id")
+                                operator = sub_filter.get("operator")
+                                
+                                # 检查是否有 RAW_SQL
+                                if operator == "RAW_SQL" and target_id is None:
+                                    has_raw_sql = True
+                                
+                                # 检查 target_id 冲突
+                                if target_id and target_id in user_dim_filter_ids:
+                                    should_skip = True
+                                    logger.debug(
+                                        f"Skipping mandatory filter {filter_id}: user already has filter on {target_id}",
+                                        extra={
+                                            "lf_id": filter_id,
+                                            "target_id": target_id,
+                                            "user_filter_ids": list(user_dim_filter_ids)
+                                        }
+                                    )
+                                    break
+                    
+                    # 如果有冲突，跳过注入
+                    if should_skip:
+                        continue
+                    
                     # 创建逻辑过滤器项
                     # 注意：逻辑过滤器（LF_*）是预定义的过滤器组合
                     # 它们在后端 SQL 生成时会被特殊处理
@@ -729,9 +921,60 @@ async def validate_and_normalize_plan(
                     )
                     plan_dict["filters"].append(filter_item.model_dump())
                     existing_filter_ids.add(filter_id)
-                    logger.debug(
-                        f"Injected mandatory filter {filter_id} from metric {metric.id}"
-                    )
+                    
+                    # 记录注入日志（包含 RAW_SQL 标记）
+                    if has_raw_sql:
+                        logger.debug(
+                            f"Injected mandatory filter {filter_id} from metric {metric.id} (contains RAW_SQL subfilter)",
+                            extra={
+                                "lf_id": filter_id,
+                                "metric_id": metric.id,
+                                "has_raw_sql": True
+                            }
+                        )
+                    else:
+                        logger.debug(
+                            f"Injected mandatory filter {filter_id} from metric {metric.id}",
+                            extra={
+                                "lf_id": filter_id,
+                                "metric_id": metric.id
+                            }
+                        )
+    
+    # Default Order By (Checkpoint4 新增)
+    if not plan_dict.get("order_by") or len(plan_dict["order_by"]) == 0:
+        from schemas.plan import OrderItem, OrderDirection
+        
+        if plan.intent == PlanIntent.TREND:
+            # TREND: 按时间维度升序 (ASC)
+            # 查找 plan_dict["dimensions"] 中的第一个时间维度
+            time_dim_id = None
+            for dim_dict in plan_dict["dimensions"]:
+                dim_id = dim_dict.get("id")
+                if dim_id:
+                    dim_def = registry.get_dimension_def(dim_id)
+                    if dim_def and dim_def.get("is_time_dimension") == True:
+                        time_dim_id = dim_id
+                        break
+            
+            if time_dim_id:
+                order_item = OrderItem(id=time_dim_id, direction=OrderDirection.ASC)
+                plan_dict["order_by"] = [order_item.model_dump()]
+                logger.debug(
+                    f"Set default order_by for TREND: {time_dim_id} ASC",
+                    extra={"dimension_id": time_dim_id}
+                )
+        
+        elif plan.intent == PlanIntent.AGG:
+            # AGG: 按主指标降序 (DESC)
+            if plan.metrics and len(plan.metrics) > 0:
+                primary_metric_id = plan.metrics[0].id
+                order_item = OrderItem(id=primary_metric_id, direction=OrderDirection.DESC)
+                plan_dict["order_by"] = [order_item.model_dump()]
+                logger.debug(
+                    f"Set default order_by for AGG: {primary_metric_id} DESC",
+                    extra={"metric_id": primary_metric_id}
+                )
     
     # Default Limit
     config = get_pipeline_config()

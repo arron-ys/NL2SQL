@@ -1077,7 +1077,8 @@ async def generate_plan(
         plan = await stage2_plan_generation.process_subquery(
             sub_query=first_sub_query,
             context=query_desc.request_context,
-            registry=registry
+            registry=registry,
+            raw_question=query_desc.raw_question
         )
         stage2_ms = int((time.perf_counter() - stage2_start) * 1000)
         
@@ -1097,7 +1098,8 @@ async def generate_plan(
             context=query_desc.request_context,
             registry=registry,
             sub_query_id=first_sub_query.id,
-            sub_query_description=first_sub_query.description
+            sub_query_description=first_sub_query.description,
+            raw_question=query_desc.raw_question
         )
         stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
         
@@ -1330,7 +1332,8 @@ async def _execute_with_debug(
             plan = await stage2_plan_generation.process_subquery(
                 sub_query=sub_query,
                 context=query_desc.request_context,
-                registry=registry
+                registry=registry,
+                raw_question=original_question
             )
             stage2_ms = int((time.perf_counter() - stage2_start) * 1000)
             plans.append(plan.model_dump())
@@ -1373,7 +1376,8 @@ async def _execute_with_debug(
                 context=query_desc.request_context,
                 registry=registry,
                 sub_query_id=sub_query.id,
-                sub_query_description=sub_query.description
+                sub_query_description=sub_query.description,
+                raw_question=original_question
             )
             stage3_ms = int((time.perf_counter() - stage3_start) * 1000)
             validated_plans.append(validated_plan.model_dump())
@@ -1497,10 +1501,6 @@ async def _execute_with_debug(
             # 如果某个阶段失败，创建错误结果
             subquery_ms = int((time.perf_counter() - subquery_start) * 1000)
             
-            # EVIDENCE: 打印完整 traceback 用于取证
-            logger.exception(
-                f"[EVIDENCE] Sub-query failed with traceback | request_id={request_id} | sub_query_id={sub_query.id}"
-            )
             
             logger.opt(exception=e).error(
                 "Sub-query failed in debug mode",

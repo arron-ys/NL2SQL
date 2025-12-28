@@ -94,6 +94,7 @@ class TimeRangeType(str, Enum):
     """时间范围类型枚举"""
     LAST_N = "LAST_N"      # 最近 N 个时间单位
     ABSOLUTE = "ABSOLUTE"  # 绝对时间范围
+    ALL_TIME = "ALL_TIME"  # 全量历史（不限时间）
 
 
 # ============================================================
@@ -213,6 +214,39 @@ class TimeRange(BaseModel):
                 )
                 
         return data
+    
+    @model_validator(mode='after')
+    def validate_time_range_fields(self) -> 'TimeRange':
+        """
+        强校验：根据 type 检查必需字段和禁止字段
+        
+        - type==ALL_TIME: value/unit/start/end 必须全部为 None
+        - type==LAST_N: value 和 unit 必须存在
+        - type==ABSOLUTE: start 和 end 必须存在
+        """
+        if self.type == TimeRangeType.ALL_TIME:
+            # ALL_TIME: 所有其他字段必须为 None
+            if self.value is not None or self.unit is not None or self.start is not None or self.end is not None:
+                raise ValueError(
+                    f"TimeRangeType.ALL_TIME requires value/unit/start/end to be None, "
+                    f"got value={self.value}, unit={self.unit}, start={self.start}, end={self.end}"
+                )
+        elif self.type == TimeRangeType.LAST_N:
+            # LAST_N: value 和 unit 必须存在
+            if self.value is None or self.unit is None:
+                raise ValueError(
+                    f"TimeRangeType.LAST_N requires 'value' and 'unit', "
+                    f"got value={self.value}, unit={self.unit}"
+                )
+        elif self.type == TimeRangeType.ABSOLUTE:
+            # ABSOLUTE: start 和 end 必须存在
+            if self.start is None or self.end is None:
+                raise ValueError(
+                    f"TimeRangeType.ABSOLUTE requires 'start' and 'end', "
+                    f"got start={self.start}, end={self.end}"
+                )
+        
+        return self
 
 
 class OrderItem(BaseModel):
