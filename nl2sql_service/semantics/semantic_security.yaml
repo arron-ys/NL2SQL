@@ -170,7 +170,7 @@ policy_fragments:
     type: "ROW_LEVEL"
     domain_id: "SALES"
     entity_id: "ENT_SALES_ORDER_ITEM"
-    raw_condition: "sales_rep_employee_number IN (SELECT e.employee_id FROM v_employee_profile e WHERE e.department_id IN (SELECT dept_id FROM dim_org_scope WHERE manager_id = {{ current_user.employee_id }}))"
+    raw_condition: "sales_rep_employee_number IN (SELECT e.employee_id FROM v_employee_profile e WHERE e.department_id IN (SELECT dept_id FROM dim_org_scope WHERE manager_id = {{ current_user.employee_id }} AND tenant_id = {{ current_user.tenant_id }}))"
 
   # SALES — 区域订单
   - fragment_id: "FRAG_SALES_REGION_ORDER_RLS"

@@ -1,5 +1,5 @@
 version: "2.0.0"
-description: "指标定义文件。包含指标的计算逻辑、默认时间窗口以及用于 RAG 检索的别名列表。"
+description: "指标定义文件。包含指标的计算逻辑、默认时间窗口以及用于 RAG 检索的别名列表。指标分类（category）合法枚举值：CORE, BASE, DERIVED, GROWTH, EFFICIENCY, COMPENSATION, TENURE, SELF。"
 
 metrics:
   # ================= SALES 域 =================

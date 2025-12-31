@@ -634,7 +634,7 @@ async def generate_sql(
         logger.debug(f"Added tenant filter: {context.tenant_id}")
     
     # RLS (Row-Level Security) 策略
-    rls_policies = registry.get_rls_policies(context.role_id, primary_entity_id)
+    rls_policies = registry.get_rls_policies(context.role_id, primary_entity_id, context.user_id, context.tenant_id)
     for rls_sql in rls_policies:
         if rls_sql:
             # 使用 CustomCriterion 包装 RLS SQL 片段

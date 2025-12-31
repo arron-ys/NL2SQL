@@ -163,3 +163,4 @@ async def test_stage4_order_by_trend_time_asc():
     # PostgreSQL: ASC is default, but should not have DESC
     assert "DESC" not in sql_string.upper() or sql_string.upper().count("DESC") == 0
 
+

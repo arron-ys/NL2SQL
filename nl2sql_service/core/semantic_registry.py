@@ -99,9 +99,16 @@ class SemanticRegistry:
         self._role_policy_map: Dict[str, Dict[str, Any]] = {}
         # role_id -> allowed_ids cache
         self._allowed_ids_cache: Dict[str, Set[str]] = {}
+        # RLS 策略片段索引（fragment_id -> fragment_def）
+        self._policy_fragments_map: Dict[str, Dict[str, Any]] = {}
+        # RowScope 绑定索引（(row_scope_code, domain_id, entity_id) -> fragment_ref）
+        self._row_scope_binding_map: Dict[Tuple[str, str, str], Optional[str]] = {}
         
         # 当前指纹
         self._current_fingerprint: Optional[str] = None
+        
+        # YAML 数据快照（用于重建索引时恢复 fragments/bindings）
+        self._yaml_data_snapshot: Optional[Dict[str, Any]] = None
         
         # 临时 Qdrant 路径（仅当 fallback 到 instance_{pid} 时设置，用于退出时清理）
         self._temp_qdrant_path: Optional[Path] = None
@@ -370,7 +377,11 @@ class SemanticRegistry:
         
         # 提取安全策略
         self._security_policies = yaml_data.get("security", {}) if isinstance(yaml_data.get("security", {}), dict) else {}
-        self._rebuild_security_indexes()
+        # 保存 YAML 数据快照（用于重建索引时恢复 fragments/bindings）
+        self._yaml_data_snapshot = yaml_data
+        # 提取 RLS 相关配置（从顶层，不在 security 下）
+        # policy_fragments 和 row_scope_bindings 在 yaml_data 顶层
+        self._rebuild_security_indexes(yaml_data)
         
         # 提取 enums 和 logical_filters（用于 Stage4 逻辑过滤器展开）
         self._enums = yaml_data.get("enums", [])
@@ -543,27 +554,73 @@ class SemanticRegistry:
             f"keyword_index: {len(self.keyword_index)} entries"
         )
 
-    def _rebuild_security_indexes(self) -> None:
+    def _rebuild_security_indexes(self, yaml_data: Optional[Dict[str, Any]] = None) -> None:
         """重建安全索引缓存（role_id -> policy）与 allowed_ids 缓存。"""
         self._role_policy_map.clear()
         self._allowed_ids_cache.clear()
+        self._policy_fragments_map.clear()
+        self._row_scope_binding_map.clear()
 
+        # 处理 role_policies（从 security 下）
         role_policies = None
         if isinstance(self._security_policies, dict):
             role_policies = self._security_policies.get("role_policies")
-        if role_policies is None:
-            return
-        if not isinstance(role_policies, list):
-            raise SecurityConfigError("security.role_policies must be a list")
+        if role_policies is not None:
+            if not isinstance(role_policies, list):
+                raise SecurityConfigError("security.role_policies must be a list")
 
-        for policy in role_policies:
-            if not isinstance(policy, dict):
-                continue
-            role_id = policy.get("role_id")
-            if not role_id:
-                continue
-            # 同 role_id 多条策略：后者覆盖前者（显式更新更优先）
-            self._role_policy_map[str(role_id)] = policy
+            for policy in role_policies:
+                if not isinstance(policy, dict):
+                    continue
+                role_id = policy.get("role_id")
+                if not role_id:
+                    continue
+                # 同 role_id 多条策略：后者覆盖前者（显式更新更优先）
+                self._role_policy_map[str(role_id)] = policy
+
+        # 处理 policy_fragments（从 yaml_data 顶层）
+        if yaml_data is not None:
+            policy_fragments = yaml_data.get("policy_fragments")
+            if isinstance(policy_fragments, list):
+                for fragment in policy_fragments:
+                    if not isinstance(fragment, dict):
+                        continue
+                    fragment_id = fragment.get("fragment_id")
+                    if not fragment_id:
+                        logger.warning("policy_fragments entry missing fragment_id, skipping")
+                        continue
+                    self._policy_fragments_map[str(fragment_id)] = fragment
+            elif policy_fragments is not None:
+                logger.warning(f"policy_fragments is not a list, got {type(policy_fragments).__name__}")
+
+            # 处理 row_scope_bindings（从 yaml_data 顶层）
+            row_scope_bindings = yaml_data.get("row_scope_bindings")
+            if isinstance(row_scope_bindings, list):
+                for binding_item in row_scope_bindings:
+                    if not isinstance(binding_item, dict):
+                        continue
+                    row_scope_code = binding_item.get("row_scope_code")
+                    if not row_scope_code:
+                        logger.warning("row_scope_bindings entry missing row_scope_code, skipping")
+                        continue
+                    bindings = binding_item.get("bindings")
+                    if not isinstance(bindings, list):
+                        logger.warning(f"row_scope_bindings entry missing bindings list for row_scope_code={row_scope_code}, skipping")
+                        continue
+                    for binding in bindings:
+                        if not isinstance(binding, dict):
+                            continue
+                        domain_id = binding.get("domain_id")
+                        entity_id = binding.get("entity_id")
+                        fragment_ref = binding.get("fragment_ref")
+                        if not domain_id or not entity_id:
+                            logger.warning(f"row_scope_bindings binding missing domain_id or entity_id, skipping")
+                            continue
+                        key = (str(row_scope_code), str(domain_id), str(entity_id))
+                        # fragment_ref 可能为 null，存储为 None
+                        self._row_scope_binding_map[key] = str(fragment_ref) if fragment_ref is not None else None
+            elif row_scope_bindings is not None:
+                logger.warning(f"row_scope_bindings is not a list, got {type(row_scope_bindings).__name__}")
     
     def _add_to_keyword_index(self, term_id: str, term_def: Dict[str, Any]) -> None:
         """
@@ -1051,8 +1108,11 @@ class SemanticRegistry:
             raise SecurityConfigError("Security config is not loaded (missing 'security')")
 
         # 索引为空但配置存在：容错重建一次
+        # 必须使用 yaml_data_snapshot，否则会导致 fragments/bindings 索引被清空且无法回填
         if not self._role_policy_map:
-            self._rebuild_security_indexes()
+            if self._yaml_data_snapshot is None:
+                raise SecurityConfigError("Security config snapshot not available (cannot rebuild indexes without yaml_data)")
+            self._rebuild_security_indexes(self._yaml_data_snapshot)
 
         if not self._role_policy_map:
             raise SecurityConfigError("Security config missing 'role_policies'")
@@ -1153,7 +1213,7 @@ class SemanticRegistry:
                 elif metric_has_all:
                     allowed = True
                 else:
-                    # domain 族规则：<DOMAIN>_ALL / <DOMAIN>_BASE
+                    # domain 族规则：<DOMAIN>_ALL / <DOMAIN>_BASE / <DOMAIN>_SELF
                     for rule in metric_domain_rules:
                         parts = rule.split("_", 1)
                         if len(parts) != 2:
@@ -1174,6 +1234,26 @@ class SemanticRegistry:
                                 allowed = True
                                 break
                             if str(category).upper() in {"CORE", "BASE"}:
+                                allowed = True
+                                break
+                        if rule_tail == "SELF":
+                            # 强约束：category 字段必须存在（fail-closed）
+                            category = term_def.get("category")
+                            if category is None:
+                                logger.error(
+                                    "Metric missing required 'category' field; denying access (fail-closed)",
+                                    extra={
+                                        "term_id": term_id,
+                                        "role_id": role_id,
+                                        "policy_id": policy_id,
+                                        "rule": rule,
+                                        "violation": "category field is required for *_SELF rule"
+                                    }
+                                )
+                                allowed = False
+                                break
+                            # *_SELF 允许 CORE, BASE, SELF
+                            if str(category).upper() in {"CORE", "BASE", "SELF"}:
                                 allowed = True
                                 break
 
@@ -1348,20 +1428,127 @@ class SemanticRegistry:
             },
         )
     
-    def get_rls_policies(self, role_id: str, entity_id: str) -> List[str]:
+    def get_rls_policies(self, role_id: str, entity_id: str, user_id: str, tenant_id: Optional[str] = None) -> List[str]:
         """
         获取行级安全策略（RLS）SQL 片段
         
         Args:
             role_id: 角色 ID
             entity_id: 实体 ID
+            user_id: 用户 ID（等同于 employee_id）
+            tenant_id: 租户 ID（可选，用于 DEPT scope 的 dim_org_scope 过滤）
         
         Returns:
             List[str]: RLS SQL 片段列表
         """
-        # TODO: 从 _security_policies 中读取 RLS 策略
-        logger.warning(f"get_rls_policies not yet fully implemented: role={role_id}, entity={entity_id}")
-        return []
+        # 1. 检查 role_id 是否存在
+        if role_id not in self._role_policy_map:
+            raise SecurityPolicyNotFound(role_id)
+        
+        policy = self._role_policy_map[role_id]
+        scopes = policy.get("scopes", {}) if isinstance(policy.get("scopes", {}), dict) else {}
+        row_scope_code = scopes.get("row_scope_code")
+        
+        # 2. 检查 row_scope_code 是否存在
+        if not row_scope_code:
+            raise SecurityConfigError(
+                f"RLS configuration error: row_scope_code missing for role_id={role_id}"
+            )
+        
+        # 3. COMPANY scope 直接返回空列表
+        if row_scope_code == "COMPANY":
+            logger.info(
+                f"get_rls_policies: role_id={role_id}, entity_id={entity_id}, row_scope_code=COMPANY, rls_count=0 (COMPANY scope, no RLS needed)"
+            )
+            return []
+        
+        # 4. 获取 entity_def 以确定 domain_id
+        entity_def = self.get_entity_def(entity_id)
+        if not entity_def:
+            raise SecurityConfigError(
+                f"RLS configuration error: entity_def not found for entity_id={entity_id}"
+            )
+        entity_domain_id = entity_def.get("domain_id")
+        if not entity_domain_id:
+            raise SecurityConfigError(
+                f"RLS configuration error: entity_def missing domain_id for entity_id={entity_id}"
+            )
+        
+        # 5. 精确查找 fragment_ref
+        binding_key = (row_scope_code, entity_domain_id, entity_id)
+        fragment_ref = self._row_scope_binding_map.get(binding_key)
+        
+        # 6. 如果找不到 binding，返回空列表（明确允许）或抛出错误
+        if fragment_ref is None:
+            # 检查是否是 key 不存在（配置错误）还是 fragment_ref 为 null
+            if binding_key not in self._row_scope_binding_map:
+                raise SecurityConfigError(
+                    f"RLS configuration error: binding not found for role_id={role_id}, entity_id={entity_id}, row_scope_code={row_scope_code}, domain_id={entity_domain_id}"
+                )
+            # fragment_ref 为 null，只有 COMPANY scope 允许返回空列表
+            if row_scope_code == "COMPANY":
+                logger.info(
+                    f"get_rls_policies: role_id={role_id}, entity_id={entity_id}, row_scope_code={row_scope_code}, rls_count=0 (COMPANY scope, fragment_ref is null, explicitly allowed)"
+                )
+                return []
+            # 非 COMPANY scope 的 fragment_ref 为 null 是安全漏洞，必须 fail-closed
+            raise SecurityConfigError(
+                f"RLS configuration error: fragment_ref is null for non-COMPANY scope, role_id={role_id}, entity_id={entity_id}, row_scope_code={row_scope_code}, domain_id={entity_domain_id}, binding_key={binding_key}"
+            )
+        
+        # 8. 查找 fragment_def
+        if fragment_ref not in self._policy_fragments_map:
+            raise SecurityConfigError(
+                f"RLS configuration error: fragment not found: {fragment_ref}"
+            )
+        
+        fragment_def = self._policy_fragments_map[fragment_ref]
+        raw_condition = fragment_def.get("raw_condition")
+        
+        # 8. 检查 raw_condition 是否存在
+        if not raw_condition:
+            raise SecurityConfigError(
+                f"RLS configuration error: raw_condition missing in fragment {fragment_ref}"
+            )
+        
+        # 9. 校验 user_id
+        if not user_id:
+            raise SecurityConfigError(
+                "RLS configuration error: user_id is required but missing"
+            )
+        
+        # 10. 校验 user_id 必须是纯数字
+        try:
+            int(user_id)
+        except (ValueError, TypeError):
+            raise SecurityConfigError(
+                f"RLS configuration error: user_id must be a numeric string, got: {user_id}"
+            )
+        
+        # 11. 校验 tenant_id（如果 raw_condition 包含 tenant 占位符）
+        if "{{ current_user.tenant_id }}" in raw_condition:
+            if not tenant_id:
+                raise SecurityConfigError(
+                    "RLS configuration error: tenant_id required but missing"
+                )
+        
+        # 12. 渲染模板：替换占位符
+        rendered_sql = raw_condition.replace("{{ current_user.employee_id }}", user_id)
+        rendered_sql = rendered_sql.replace("{{ current_user.tenant_id }}", f"'{tenant_id}'" if tenant_id else "")
+        
+        # 13. 检查渲染后是否还有未替换的占位符
+        if "{{" in rendered_sql or "}}" in rendered_sql:
+            raise SecurityConfigError(
+                f"RLS configuration error: template rendering incomplete, still contains {{ or }}, fragment={fragment_ref}, raw_condition={raw_condition}"
+            )
+        
+        # 14. 记录日志并返回
+        logger.info(
+            f"get_rls_policies: role_id={role_id}, entity_id={entity_id}, row_scope_code={row_scope_code}, rls_count=1"
+        )
+        logger.debug(f"get_rls_policies: rendered_sql={rendered_sql}")
+        
+        return [rendered_sql]
     
     # ============================================================
     # 检索方法（按设计文档 3.2.3 的三步流程）
